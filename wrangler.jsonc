@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "dinner-party",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "dinner-party",
+      // Replace after running: wrangler d1 create dinner-party
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Daily at 15:00 UTC: send RSVP / day-before reminders.
+  "triggers": { "crons": ["0 15 * * *"] },
+  "vars": {
+    "DEFAULT_TIMEZONE": "America/Chicago"
+  }
+  // Secrets (wrangler secret put ...): SESSION_SECRET, RESEND_API_KEY
+  // Later: "r2_buckets": [{ "binding": "PHOTOS", "bucket_name": "dinner-party-photos" }]
+}
