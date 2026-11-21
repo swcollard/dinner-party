@@ -4,7 +4,7 @@ import type { AppBindings } from "../env";
 import { can, PERMISSIONS } from "../lib/permissions";
 import { memberLink, provisionMember, reissueLink } from "../lib/provision";
 import { isUniqueViolation, updateStatement } from "../lib/sql";
-import { sendInvite } from "../notify/reminders";
+import { canNotify, sendInvite, sendNewLink } from "../notify/reminders";
 
 export const memberRoutes = new Hono<AppBindings>();
 
@@ -148,15 +148,47 @@ memberRoutes.put("/members/:id", async (c) => {
 });
 
 // Issue a fresh personal link (revoking the old ones): for a lost phone or a leaked link.
+// Members can reissue their own and admins anyone's; both get the link back to share.
+// Delegates (manage_members without admin) must NOT receive someone else's link: it
+// would let them act as that person, with permissions and private data they were not
+// granted. For them the link is emailed straight to the member instead.
 memberRoutes.post("/members/:id/link", async (c) => {
   const me = c.get("member");
   const id = c.req.param("id");
-  if (id !== me.id && !can(me, "manage_members")) return c.json({ error: "forbidden" }, 403);
-  const target = await c.env.DB.prepare("SELECT role FROM members WHERE id = ? AND group_id = ? AND active = 1")
+  const isSelf = id === me.id;
+  if (!isSelf && !can(me, "manage_members")) return c.json({ error: "forbidden" }, 403);
+
+  const target = await c.env.DB.prepare(
+    "SELECT name, email, phone, role, notify_channels FROM members WHERE id = ? AND group_id = ? AND active = 1",
+  )
     .bind(id, me.groupId)
-    .first<{ role: "admin" | "member" }>();
+    .first<{ name: string; email: string; phone: string | null; role: "admin" | "member"; notify_channels: string }>();
   if (!target) return c.json({ error: "not found" }, 404);
-  if (id !== me.id && target.role === "admin" && me.role !== "admin") return c.json({ error: "forbidden" }, 403);
-  const token = await reissueLink(c.env.DB, me.groupId, id);
-  return c.json({ link: memberLink(c.env.PUBLIC_BASE_URL, token) });
+
+  if (isSelf || me.role === "admin") {
+    const token = await reissueLink(c.env.DB, me.groupId, id);
+    return c.json({ link: memberLink(c.env.PUBLIC_BASE_URL, token) });
+  }
+
+  if (target.role === "admin") return c.json({ error: "forbidden" }, 403);
+  const recipient = {
+    key: `member:${id}`,
+    name: target.name,
+    email: target.email,
+    phone: target.phone,
+    channels: JSON.parse(target.notify_channels) as string[],
+  };
+  if (!canNotify(c.env, recipient)) {
+    return c.json({ error: "email_not_configured", message: "Ask an admin to reissue this link." }, 409);
+  }
+  const group = await c.env.DB.prepare("SELECT name FROM groups WHERE id = ?").bind(me.groupId).first<{ name: string }>();
+  try {
+    await reissueLink(c.env.DB, me.groupId, id, (token) =>
+      sendNewLink(c.env, recipient, group?.name ?? "the group", memberLink(c.env.PUBLIC_BASE_URL, token)),
+    );
+  } catch (e) {
+    console.error("link delivery failed", e);
+    return c.json({ error: "could not send the link; the old one still works" }, 502);
+  }
+  return c.json({ sent: true });
 });

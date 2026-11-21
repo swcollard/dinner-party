@@ -89,6 +89,28 @@ export async function sendInvite(env: Env, member: Recipient, groupName: string,
   }
 }
 
+/** Whether at least one configured channel can reach this person. */
+export const canNotify = (env: Env, r: Recipient): boolean => getNotifiers(env).some((n) => n.canReach(r));
+
+/** Send a member their fresh personal link. Unlike invites this throws if nothing could be delivered. */
+export async function sendNewLink(env: Env, member: Recipient, groupName: string, link: string): Promise<void> {
+  const message = {
+    subject: `Your new ${groupName} link`,
+    text: `Hi ${member.name},\n\nAn organizer sent you a fresh personal link for ${groupName}. Your old link no longer works. Keep this one private:\n\n${link}\n\nIf you subscribe to the calendar feed, use the new calendar URL shown in the app.`,
+  };
+  const errors: unknown[] = [];
+  for (const n of getNotifiers(env)) {
+    if (!n.canReach(member)) continue;
+    try {
+      await n.send(member, message);
+      return;
+    } catch (e) {
+      errors.push(e);
+    }
+  }
+  throw new Error(`could not deliver link: ${errors.map(String).join("; ") || "no channel available"}`);
+}
+
 /**
  * Hourly cron. For every upcoming dinner, if it is past the group's reminder
  * hour in the group's own timezone, send whichever reminders are due today.

@@ -37,16 +37,39 @@ export async function provisionMember(
   return { id, token };
 }
 
-/** Replace all of a member's links with a fresh one. */
-export async function reissueLink(db: D1Database, groupId: string, memberId: string): Promise<string> {
+/**
+ * Replace a member's links with a fresh one, and rotate their calendar token too:
+ * the calendar URL exposes host addresses, so a leaked or lost-phone situation
+ * must cut that off as well (the member re-subscribes using the URL in /api/me).
+ *
+ * The new token is stored first and the old ones are revoked only after
+ * `deliver` succeeds, so a failed delivery never locks the member out.
+ */
+export async function reissueLink(
+  db: D1Database,
+  groupId: string,
+  memberId: string,
+  deliver?: (token: string) => Promise<void>,
+): Promise<string> {
   const token = generateToken();
+  const hash = await hashToken(token);
+  await db
+    .prepare("INSERT INTO access_tokens (token_hash, group_id, member_id) VALUES (?, ?, ?)")
+    .bind(hash, groupId, memberId)
+    .run();
+  try {
+    await deliver?.(token);
+  } catch (e) {
+    await db.prepare("DELETE FROM access_tokens WHERE token_hash = ?").bind(hash).run();
+    throw e;
+  }
   await db.batch([
     db
-      .prepare("UPDATE access_tokens SET revoked_at = datetime('now') WHERE member_id = ? AND revoked_at IS NULL")
-      .bind(memberId),
-    db
-      .prepare("INSERT INTO access_tokens (token_hash, group_id, member_id) VALUES (?, ?, ?)")
-      .bind(await hashToken(token), groupId, memberId),
+      .prepare(
+        "UPDATE access_tokens SET revoked_at = datetime('now') WHERE member_id = ? AND token_hash != ? AND revoked_at IS NULL",
+      )
+      .bind(memberId, hash),
+    db.prepare("UPDATE members SET calendar_token = ? WHERE id = ?").bind(generateToken(), memberId),
   ]);
   return token;
 }

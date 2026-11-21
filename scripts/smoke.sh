@@ -124,6 +124,22 @@ check "wrong token -> 404" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/cale
 OTHER_FEED=$(req "$(new_group "Third" tess)" GET /api/me; echo "$BODY" | jq -r .calendarUrl | sed "s#^[^/]*//[^/]*##")
 check "other group's feed has none of our dinners" "$(curl -s "$BASE$OTHER_FEED" | grep -c VEVENT)" 0
 
+echo "== link reissue & calendar token rotation"
+req "$ALEX" POST "/api/members/$BEA_ID/link"; NEWBEA=$(tok "$BODY")
+check "admin gets the new link back" "$([ -n "$NEWBEA" ] && echo y)" y
+req "$BEA" GET /api/me; check "old link is revoked" "$CODE" 401
+req "$NEWBEA" GET /api/me; check "new link works" "$CODE" 200
+NEW_FEED=$(echo "$BODY" | jq -r .calendarUrl | sed "s#^[^/]*//[^/]*##")
+check "old calendar URL stops working" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE$FEED")" 404
+check "new calendar URL works" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE$NEW_FEED")" 200
+BEA=$NEWBEA
+req "$CAL" POST "/api/members/$BEA_ID/link"; check "member without manage_members can't reissue others'" "$CODE" 403
+req "$ALEX" PUT "/api/members/$CAL_ID" '{"permissions":["manage_members"]}'
+req "$CAL" POST "/api/members/$BEA_ID/link"
+check "a delegate is never handed someone else's link" "$(echo "$BODY" | jq 'has("link")')" false
+req "$CAL" POST "/api/members/$ALEX_ID/link"; check "a delegate can't touch an admin's link" "$CODE" 403
+req "$CAL" POST "/api/members/$CAL_ID/link"; check "anyone can reissue their own" "$CODE" 200; CAL=$(tok "$BODY")
+
 echo "== multi-tenancy isolation"
 OTHER=$(new_group "Other Group" zed)
 req "$OTHER" GET "/api/dinners/$ID1";            check "other group can't read dinner" "$CODE" 404
@@ -147,7 +163,7 @@ if [ -n "${MOCK_EMAIL_LOG:-}" ]; then
   req "$TOKR" PUT /api/group "{\"dinnerWeekday\":$TOMORROW_DOW,\"reminderHour\":0,\"rsvpDeadlineDays\":1}"
   req "$TOKR" PUT /api/me '{"dietary":"none","address":"9 Elm St"}'
   req "$TOKR" POST /api/members "{\"name\":\"yes$RUN\",\"email\":\"yes$RUN@example.com\"}"; YES=$(tok "$BODY")
-  req "$TOKR" POST /api/members "{\"name\":\"quiet$RUN\",\"email\":\"quiet$RUN@example.com\"}"
+  req "$TOKR" POST /api/members "{\"name\":\"quiet$RUN\",\"email\":\"quiet$RUN@example.com\"}"; QUIET_ID=$(echo "$BODY" | jq -r .id); QUIET=$(tok "$BODY")
   req "$YES" PUT /api/me '{"dietary":"none"}'
   req "$TOKR" POST /api/dinners/schedule-next; RD=$(echo "$BODY" | jq -r .id)
   check "dinner lands on tomorrow (group timezone)" "$(echo "$BODY" | jq -r .date)" "$(TZ=America/Chicago date -d tomorrow +%F)"
@@ -167,6 +183,16 @@ if [ -n "${MOCK_EMAIL_LOG:-}" ]; then
   BEFORE=$(wc -l < "$MOCK_EMAIL_LOG")
   trigger
   check "re-running the cron sends nothing twice" "$(( $(wc -l < "$MOCK_EMAIL_LOG") - BEFORE ))" 0
+
+  echo "== delegated link reissue is emailed, not returned"
+  req "$TOKR" POST /api/members "{\"name\":\"dele$RUN\",\"email\":\"dele$RUN@example.com\"}"; DELE_ID=$(echo "$BODY" | jq -r .id); DELE=$(tok "$BODY")
+  req "$TOKR" PUT "/api/members/$DELE_ID" '{"permissions":["manage_members"]}'
+  req "$DELE" POST "/api/members/$QUIET_ID/link"
+  check "delegate gets no link in the response" "$(echo "$BODY" | jq -c '{sent, hasLink: has("link")}')" '{"sent":true,"hasLink":false}'
+  NEWQ=$(jq -r --arg to "quiet$RUN@example.com" 'select(.to[0]==$to and (.subject|startswith("Your new")))|.text' "$MOCK_EMAIL_LOG" | grep -o '#t=[A-Za-z0-9_-]*' | tail -1 | cut -c4-)
+  check "the member receives the new link by email" "$([ -n "$NEWQ" ] && echo y)" y
+  req "$NEWQ" GET /api/me; check "emailed link works" "$CODE" 200
+  req "$QUIET" GET /api/me; check "member's previous link was revoked" "$CODE" 401
 fi
 
 echo
