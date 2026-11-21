@@ -3,6 +3,7 @@ import { requireMember } from "./auth";
 import type { AppBindings } from "./env";
 import { runReminders } from "./notify";
 import { adminRoutes } from "./routes/admin";
+import { attendanceRoutes } from "./routes/attendance";
 import { calendarRoutes } from "./routes/calendar";
 import { dinnerRoutes } from "./routes/dinners";
 import { groupRoutes } from "./routes/group";
@@ -29,6 +30,7 @@ api.route("/", meRoutes);
 api.route("/", memberRoutes);
 api.route("/", groupRoutes);
 api.route("/", dinnerRoutes);
+api.route("/", attendanceRoutes);
 app.route("/api", api);
 
 export default {

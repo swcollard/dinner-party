@@ -84,6 +84,25 @@ check "address visible to members" "$(echo "$BODY" | jq -r .address)" "1 Main St
 check "dietary hidden from non-host" "$(echo "$BODY" | jq 'has("dietary") and (.dietary != null)')" false
 req "$ALEX" GET "/api/dinners/$ID1"; check "dietary key present for host" "$(echo "$BODY" | jq 'has("dietary")')" true
 
+echo "== RSVPs & guests"
+req "$BEA" PUT "/api/dinners/$ID1/rsvp" '{"response":"yes"}'; check "yes requires dietary info" "$CODE" 409
+check "...with a clear error code" "$(echo "$BODY" | jq -r .error)" dietary_required
+req "$BEA" PUT "/api/dinners/$ID1/rsvp" '{"response":"maybe"}'; check "maybe doesn't" "$CODE" 200
+req "$BEA" PUT /api/me '{"dietary":"none"}'
+req "$BEA" PUT "/api/dinners/$ID1/rsvp" '{"response":"yes"}'; check "yes after setting dietary ('none' counts)" "$CODE" 200
+req "$ALEX" PUT "/api/dinners/$ID1/rsvp" '{"response":"yes"}'; check "host RSVPs yes" "$CODE" 200
+req "$BEA" PUT "/api/dinners/$ID2/rsvp" '{"response":"yes"}'; check "can't RSVP to a cancelled dinner" "$CODE" 409
+req "$BEA" POST "/api/dinners/$ID1/guests" '{"name":"Pat","email":"pat@example.com","dietary":"peanut allergy"}'; check "member adds a guest with contact" "$CODE" 201
+GUEST=$(echo "$BODY" | jq -r .id)
+req "$BEA" POST "/api/dinners/$ID1/guests" '{"name":"Bad","email":"not-an-email"}'; check "guest email validated" "$CODE" 400
+req "$ALEX" GET "/api/dinners/$ID1"
+check "headcount = 2 members + 1 guest" "$(echo "$BODY" | jq .headcount)" 3
+check "host sees dietary needs (sesame + peanut; 'none' omitted)" "$(echo "$BODY" | jq '.dietary|map(.dietary)|sort|join(",")' -r)" "peanut allergy,severe sesame allergy"
+check "guest contact details are not exposed" "$(echo "$BODY" | jq '.guests[0]|has("email")')" false
+req "$CAL" DELETE "/api/dinners/$ID1/guests/$GUEST"; check "other member can't remove someone's guest" "$CODE" 403
+req "$BEA" PUT "/api/dinners/$ID1/guests/$GUEST" '{"response":"no"}'; check "inviter updates guest response" "$CODE" 200
+req "$ALEX" DELETE "/api/dinners/$ID1/guests/$GUEST"; check "host removes guest" "$CODE" 200
+
 echo "== multi-tenancy isolation"
 OTHER=$(new_group "Other Group" zed)
 req "$OTHER" GET "/api/dinners/$ID1";            check "other group can't read dinner" "$CODE" 404

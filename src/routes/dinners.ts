@@ -64,7 +64,7 @@ dinnerRoutes.post("/dinners/schedule-next", async (c) => {
   return c.json({ id, hostId: plan.rotationHostId, date: plan.date }, 201);
 });
 
-interface DinnerRow {
+export interface DinnerRow {
   id: string;
   host_id: string;
   rotation_host_id: string | null;
@@ -80,7 +80,7 @@ interface DinnerRow {
 }
 
 /** Fetch a dinner, scoped to the caller's group so ids from other groups look nonexistent. */
-const findDinner = (db: D1Database, id: string, groupId: string) =>
+export const findDinner = (db: D1Database, id: string, groupId: string) =>
   db
     .prepare(
       `SELECT d.*, h.name AS host_name, h.address AS host_address
@@ -255,34 +255,6 @@ dinnerRoutes.delete("/skips/:date", async (c) => {
   if (!can(me, "skip_weeks")) return c.json({ error: "forbidden" }, 403);
   await c.env.DB.prepare("DELETE FROM skip_dates WHERE group_id = ? AND date = ?")
     .bind(me.groupId, c.req.param("date"))
-    .run();
-  return c.json({ ok: true });
-});
-
-const rsvpBody = z.object({
-  response: z.enum(["yes", "no", "maybe"]),
-  guests: z.number().int().min(0).max(10).default(0),
-});
-
-dinnerRoutes.put("/dinners/:id/rsvp", async (c) => {
-  const me = c.get("member");
-  const body = rsvpBody.safeParse(await c.req.json().catch(() => null));
-  if (!body.success) return c.json({ error: body.error.issues }, 400);
-
-  // Scope to the caller's group so RSVPs can't be written to another group's dinner.
-  const dinner = await c.env.DB.prepare(
-    "SELECT id FROM dinners WHERE id = ? AND group_id = ? AND status = 'scheduled'",
-  )
-    .bind(c.req.param("id"), me.groupId)
-    .first();
-  if (!dinner) return c.json({ error: "not found" }, 404);
-
-  await c.env.DB.prepare(
-    `INSERT INTO rsvps (dinner_id, member_id, response, guests) VALUES (?, ?, ?, ?)
-     ON CONFLICT (dinner_id, member_id)
-     DO UPDATE SET response = excluded.response, guests = excluded.guests, updated_at = datetime('now')`,
-  )
-    .bind(dinner.id, me.id, body.data.response, body.data.guests)
     .run();
   return c.json({ ok: true });
 });
