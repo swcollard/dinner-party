@@ -31,8 +31,9 @@ attendanceRoutes.put("/dinners/:id/rsvp", async (c) => {
   const found = await openDinner(c);
   if ("res" in found) return found.res;
 
-  // Hosts need to know about allergies, so dietary info is required before saying yes ("none" counts).
-  if (body.data.response === "yes") {
+  // Hosts need to know about allergies, so dietary info is required before saying yes or maybe
+  // ("none" counts): a "maybe" shows up in the host's attendee list too. Only "no" skips it.
+  if (body.data.response !== "no") {
     const profile = await c.env.DB.prepare("SELECT dietary FROM members WHERE id = ?")
       .bind(me.id)
       .first<{ dietary: string | null }>();

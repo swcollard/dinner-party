@@ -136,7 +136,11 @@ dinnerRoutes.get("/dinners/:id", async (c) => {
     ? [
         ...rsvps.results.filter((r) => attending(r.response)).map((r) => ({ name: r.name, dietary: r.dietary })),
         ...guests.results.filter((g) => attending(g.response)).map((g) => ({ name: g.name, dietary: g.dietary })),
-      ].filter((x) => x.dietary && x.dietary.trim().toLowerCase() !== "none")
+      ]
+        // Drop people who said "none"; keep anyone whose needs are unknown (a guest added without
+        // them) and say so, because silence would look the same as "no restrictions".
+        .filter((x) => x.dietary?.trim().toLowerCase() !== "none")
+        .map((x) => ({ name: x.name, dietary: x.dietary?.trim() || "not provided" }))
     : undefined;
 
   return c.json({

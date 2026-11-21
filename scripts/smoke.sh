@@ -92,7 +92,8 @@ req "$ALEX" GET "/api/dinners/$ID1"; check "dietary key present for host" "$(ech
 echo "== RSVPs & guests"
 req "$BEA" PUT "/api/dinners/$ID1/rsvp" '{"response":"yes"}'; check "yes requires dietary info" "$CODE" 409
 check "...with a clear error code" "$(echo "$BODY" | jq -r .error)" dietary_required
-req "$BEA" PUT "/api/dinners/$ID1/rsvp" '{"response":"maybe"}'; check "maybe doesn't" "$CODE" 200
+req "$BEA" PUT "/api/dinners/$ID1/rsvp" '{"response":"maybe"}'; check "maybe requires dietary info too (it appears in the host's list)" "$CODE" 409
+req "$BEA" PUT "/api/dinners/$ID1/rsvp" '{"response":"no"}'; check "declining doesn't need it" "$CODE" 200
 req "$BEA" PUT /api/me '{"dietary":"none"}'
 req "$BEA" PUT "/api/dinners/$ID1/rsvp" '{"response":"yes"}'; check "yes after setting dietary ('none' counts)" "$CODE" 200
 req "$ALEX" PUT "/api/dinners/$ID1/rsvp" '{"response":"yes"}'; check "host RSVPs yes" "$CODE" 200
@@ -105,6 +106,10 @@ req "$ALEX" GET "/api/dinners/$ID1"
 check "headcount = 2 members + 1 guest" "$(echo "$BODY" | jq .headcount)" 3
 check "host sees dietary needs (sesame + peanut; 'none' omitted)" "$(echo "$BODY" | jq '.dietary|map(.dietary)|sort|join(",")' -r)" "peanut allergy,severe sesame allergy"
 check "guest contact details are not exposed" "$(echo "$BODY" | jq '.guests[0]|has("email")')" false
+req "$BEA" POST "/api/dinners/$ID1/guests" '{"name":"Sam"}'; SAM=$(echo "$BODY" | jq -r .id)
+req "$ALEX" GET "/api/dinners/$ID1"
+check "a guest with no dietary info shows as 'not provided' to the host" "$(echo "$BODY" | jq -r '.dietary[]|select(.name=="Sam")|.dietary')" "not provided"
+req "$ALEX" DELETE "/api/dinners/$ID1/guests/$SAM"
 req "$CAL" DELETE "/api/dinners/$ID1/guests/$GUEST"; check "other member can't remove someone's guest" "$CODE" 403
 req "$BEA" PUT "/api/dinners/$ID1/guests/$GUEST" '{"response":"no"}'; check "inviter updates guest response" "$CODE" 200
 req "$ALEX" DELETE "/api/dinners/$ID1/guests/$GUEST"; check "host removes guest" "$CODE" 200
