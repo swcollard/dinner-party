@@ -34,7 +34,9 @@ Addresses and allergy data are sensitive. Every `/api` route requires a valid li
 address is only returned to members of the dinner's group; everyone's dietary needs go only to the host and editors; guest contact
 details are never returned by the API; the address appears in emails only on day-before/day-of reminders. Cross-group access returns 404.
 
-## Assumptions to confirm
+## Confirmed assumptions
+
+All five confirmed by the project owner.
 
 1. "Central Standard Time" means US Central **with daylight saving** (`America/Chicago`), not a fixed UTC-6.
 2. Only people with the `override_host` permission (admins by default) can change a host. A host can cancel their own dinner but cannot hand it to someone else.
