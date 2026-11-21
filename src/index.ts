@@ -9,6 +9,7 @@ import { dinnerRoutes } from "./routes/dinners";
 import { groupRoutes } from "./routes/group";
 import { memberRoutes } from "./routes/members";
 import { meRoutes } from "./routes/me";
+import { potluckRoutes } from "./routes/potluck";
 
 const app = new Hono<AppBindings>();
 
@@ -31,6 +32,7 @@ api.route("/", memberRoutes);
 api.route("/", groupRoutes);
 api.route("/", dinnerRoutes);
 api.route("/", attendanceRoutes);
+api.route("/", potluckRoutes);
 app.route("/api", api);
 
 export default {
