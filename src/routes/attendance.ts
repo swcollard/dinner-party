@@ -1,7 +1,9 @@
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import type { AppBindings } from "../env";
+import { closedReason } from "../lib/dinner-state";
 import { canEditDinner } from "../lib/permissions";
+import { todayIn } from "../lib/time";
 import { findDinner, type DinnerRow } from "./dinners";
 
 export const attendanceRoutes = new Hono<AppBindings>();
@@ -12,9 +14,11 @@ type Ctx = Context<AppBindings>;
 
 /** The dinner in the caller's group if it is still on; otherwise a ready-made error response. */
 async function openDinner(c: Ctx): Promise<{ dinner: DinnerRow } | { res: Response }> {
-  const d = await findDinner(c.env.DB, c.req.param("id") ?? "", c.get("member").groupId);
+  const me = c.get("member");
+  const d = await findDinner(c.env.DB, c.req.param("id") ?? "", me.groupId);
   if (!d) return { res: c.json({ error: "not found" }, 404) };
-  if (d.status !== "scheduled") return { res: c.json({ error: `dinner is ${d.status}` }, 409) };
+  const closed = closedReason(d, todayIn(me.timezone, new Date()));
+  if (closed) return { res: c.json({ error: closed }, 409) };
   return { dinner: d };
 }
 

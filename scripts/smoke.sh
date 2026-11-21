@@ -7,6 +7,7 @@ set -u
 BASE=${BASE:-http://localhost:8787}
 SECRET=${SETUP_SECRET:-devsecret}
 FAILS=0
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
 # req TOKEN METHOD PATH [JSON]  -> sets $BODY and $CODE
 req() {
@@ -30,6 +31,10 @@ add_member() { # adminToken name -> prints "id token"
   echo "$(echo "$BODY" | jq -r .id) $(tok "$BODY")"
 }
 dow() { date -u -d "$1 +$2 day" +%F; }
+# Fire the hourly cron once (needs `wrangler dev --test-scheduled`).
+trigger() { curl -s -o /dev/null "$BASE/cdn-cgi/handler/scheduled?cron=0+*+*+*+*"; sleep 2; }
+# Run SQL against the local D1 (test setup only: lets us back-date a dinner).
+local_sql() { (cd "$ROOT" && npx wrangler d1 execute DB --local --command "$1" >/dev/null 2>&1); }
 
 echo "== setup"
 ALEX=$(new_group "Sunday Supper" alex)
@@ -135,10 +140,27 @@ check "new calendar URL works" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE$
 BEA=$NEWBEA
 req "$CAL" POST "/api/members/$BEA_ID/link"; check "member without manage_members can't reissue others'" "$CODE" 403
 req "$ALEX" PUT "/api/members/$CAL_ID" '{"permissions":["manage_members"]}'
-req "$CAL" POST "/api/members/$BEA_ID/link"
+read DEE_ID DEE < <(add_member "$ALEX" dee)   # a throwaway target: with email configured the delegate's reissue succeeds and revokes it
+req "$CAL" POST "/api/members/$DEE_ID/link"
 check "a delegate is never handed someone else's link" "$(echo "$BODY" | jq 'has("link")')" false
 req "$CAL" POST "/api/members/$ALEX_ID/link"; check "a delegate can't touch an admin's link" "$CODE" 403
 req "$CAL" POST "/api/members/$CAL_ID/link"; check "anyone can reissue their own" "$CODE" 200; CAL=$(tok "$BODY")
+
+echo "== past dinners are closed, then marked done"
+req "$ALEX" POST /api/dinners/schedule-next; PAST=$(echo "$BODY" | jq -r .id)
+local_sql "UPDATE dinners SET date='2020-01-05' WHERE id='$PAST'"
+req "$ALEX" GET "/api/dinners/$PAST"; check "back-dated dinner is now in the past (test setup worked)" "$(echo "$BODY" | jq -r .date)" 2020-01-05
+check "address is hidden once the dinner has passed" "$(echo "$BODY" | jq '.address')" null
+req "$BEA" PUT "/api/dinners/$PAST/rsvp" '{"response":"no"}';        check "can't RSVP to a past dinner" "$CODE" 409
+check "...with a clear reason" "$(echo "$BODY" | jq -r .error)" "dinner is in the past"
+req "$BEA" POST "/api/dinners/$PAST/guests" '{"name":"Late"}';      check "can't add guests to a past dinner" "$CODE" 409
+req "$BEA" POST "/api/dinners/$PAST/dishes" '{"description":"x"}';  check "can't add dishes to a past dinner" "$CODE" 409
+req "$ALEX" PUT "/api/dinners/$PAST" '{"menu":"late edit"}';        check "can't edit a past dinner" "$CODE" 409
+req "$ALEX" PUT "/api/dinners/$PAST/host" "{\"hostId\":\"$CAL_ID\"}"; check "can't change the host of a past dinner" "$CODE" 409
+req "$ALEX" POST "/api/dinners/$PAST/cancel";                       check "can't cancel a past dinner" "$CODE" 409
+trigger
+req "$ALEX" GET "/api/dinners/$PAST"; check "hourly job marks it done" "$(echo "$BODY" | jq -r .status)" done
+req "$ALEX" GET "/api/dinners/$ID1";  check "upcoming dinners are left alone" "$(echo "$BODY" | jq -r .status)" scheduled
 
 echo "== multi-tenancy isolation"
 OTHER=$(new_group "Other Group" zed)
@@ -172,7 +194,6 @@ if [ -n "${MOCK_EMAIL_LOG:-}" ]; then
   sleep 1
   check "new members get an invite email with their link" "$(jq -r --arg to "quiet$RUN@example.com" 'select(.to[0]==$to)|.text' "$MOCK_EMAIL_LOG" | grep -c '#t=')" 1
   check "new host is told it's their turn" "$(subjects "host$RUN@example.com")" "You're hosting Reminders on $(date -u -d "$(TZ=America/Chicago date -d tomorrow +%F)" +'%A, %b %-d')|"
-  trigger() { curl -s -o /dev/null "$BASE/cdn-cgi/handler/scheduled?cron=0+*+*+*+*"; sleep 2; }
   trigger
   check "host gets day-before reminder" "$(subjects "host$RUN@example.com" | grep -c "Tomorrow: dinner at host$RUN's")" 1
   check "'yes' member gets day-before reminder" "$(subjects "yes$RUN@example.com" | grep -c "Tomorrow: dinner at host$RUN's")" 1

@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { requireMember } from "./auth";
 import { BACKUP_CRON, runBackup } from "./backup";
 import type { AppBindings } from "./env";
+import { markPastDinnersDone } from "./lifecycle";
 import { runReminders } from "./notify/reminders";
 import { adminRoutes } from "./routes/admin";
 import { attendanceRoutes } from "./routes/attendance";
@@ -38,8 +39,18 @@ app.route("/api", api);
 
 export default {
   fetch: app.fetch,
-  // Two crons (see wrangler.jsonc): hourly reminders, weekly backup.
+  // Two crons (see wrangler.jsonc): hourly reminders + closing past dinners, weekly backup.
   scheduled: (event: ScheduledController, env: AppBindings["Bindings"], ctx: ExecutionContext) => {
-    ctx.waitUntil(event.cron === BACKUP_CRON ? runBackup(env, new Date()) : runReminders(env, new Date()));
+    const now = new Date();
+    if (event.cron === BACKUP_CRON) {
+      ctx.waitUntil(runBackup(env, now));
+      return;
+    }
+    // Independent jobs: one failing must not stop the other.
+    ctx.waitUntil(
+      Promise.allSettled([runReminders(env, now), markPastDinnersDone(env, now)]).then((results) => {
+        for (const r of results) if (r.status === "rejected") console.error("hourly job failed", r.reason);
+      }),
+    );
   },
 } satisfies ExportedHandler<AppBindings["Bindings"]>;

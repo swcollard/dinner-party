@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppBindings } from "../env";
+import { closedReason } from "../lib/dinner-state";
 import { canEditDinner } from "../lib/permissions";
+import { todayIn } from "../lib/time";
 import { findDinner } from "./dinners";
 
 export const potluckRoutes = new Hono<AppBindings>();
@@ -23,7 +25,8 @@ potluckRoutes.post("/dinners/:id/dishes", async (c) => {
 
   const d = await findDinner(c.env.DB, c.req.param("id"), me.groupId);
   if (!d) return c.json({ error: "not found" }, 404);
-  if (d.status !== "scheduled") return c.json({ error: `dinner is ${d.status}` }, 409);
+  const closed = closedReason(d, todayIn(me.timezone, new Date()));
+  if (closed) return c.json({ error: closed }, 409);
   if (d.menu_mode === "host") return c.json({ error: "this dinner's menu is chosen by the host" }, 409);
 
   const id = crypto.randomUUID();

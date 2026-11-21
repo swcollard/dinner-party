@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppBindings } from "../env";
+import { closedReason } from "../lib/dinner-state";
 import { can, canCancelDinner, canEditDinner } from "../lib/permissions";
 import { planNextDinner } from "../lib/rotation";
 import { todayIn } from "../lib/time";
@@ -140,8 +141,8 @@ dinnerRoutes.get("/dinners/:id", async (c) => {
     menu: d.menu,
     notes: d.notes,
     host: { id: d.host_id, name: d.host_name },
-    // Only shown for dinners that are still on; every caller is a member of the group.
-    address: d.status === "scheduled" ? d.host_address : null,
+    // Only shown while the dinner is still on (not cancelled, done or past); every caller is a group member.
+    address: closedReason(d, todayIn(me.timezone, new Date())) === null ? d.host_address : null,
     chatUrl: group?.chat_url ?? null,
     headcount:
       rsvps.results.filter((r) => r.response === "yes").length +
@@ -166,7 +167,8 @@ dinnerRoutes.put("/dinners/:id", async (c) => {
   const d = await findDinner(c.env.DB, c.req.param("id"), me.groupId);
   if (!d) return c.json({ error: "not found" }, 404);
   if (!canEditDinner(me, d.host_id)) return c.json({ error: "forbidden" }, 403);
-  if (d.status !== "scheduled") return c.json({ error: `dinner is ${d.status}` }, 409);
+  const closed = closedReason(d, todayIn(me.timezone, new Date()));
+  if (closed) return c.json({ error: closed }, 409);
 
   const body = dinnerPatch.safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: body.error.issues }, 400);
@@ -192,7 +194,8 @@ dinnerRoutes.put("/dinners/:id/host", async (c) => {
 
   const d = await findDinner(c.env.DB, c.req.param("id"), me.groupId);
   if (!d) return c.json({ error: "not found" }, 404);
-  if (d.status !== "scheduled") return c.json({ error: `dinner is ${d.status}` }, 409);
+  const closed = closedReason(d, todayIn(me.timezone, new Date()));
+  if (closed) return c.json({ error: closed }, 409);
   const host = await c.env.DB.prepare("SELECT id FROM members WHERE id = ? AND group_id = ? AND active = 1")
     .bind(body.data.hostId, me.groupId)
     .first();
@@ -209,7 +212,8 @@ dinnerRoutes.post("/dinners/:id/cancel", async (c) => {
   const d = await findDinner(c.env.DB, c.req.param("id"), me.groupId);
   if (!d) return c.json({ error: "not found" }, 404);
   if (!canCancelDinner(me, d.host_id)) return c.json({ error: "forbidden" }, 403);
-  if (d.status !== "scheduled") return c.json({ error: `dinner is ${d.status}` }, 409);
+  const closed = closedReason(d, todayIn(me.timezone, new Date()));
+  if (closed) return c.json({ error: closed }, 409);
 
   const body = z.object({ reason: z.string().trim().max(500).optional() }).safeParse(await c.req.json().catch(() => ({})));
   if (!body.success) return c.json({ error: body.error.issues }, 400);
