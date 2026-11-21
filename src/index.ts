@@ -5,6 +5,8 @@ import { runReminders } from "./notify";
 import { adminRoutes } from "./routes/admin";
 import { calendarRoutes } from "./routes/calendar";
 import { dinnerRoutes } from "./routes/dinners";
+import { groupRoutes } from "./routes/group";
+import { memberRoutes } from "./routes/members";
 import { meRoutes } from "./routes/me";
 
 const app = new Hono<AppBindings>();
@@ -24,6 +26,8 @@ app.route("/calendar", calendarRoutes);
 const api = new Hono<AppBindings>();
 api.use("*", requireMember);
 api.route("/", meRoutes);
+api.route("/", memberRoutes);
+api.route("/", groupRoutes);
 api.route("/", dinnerRoutes);
 app.route("/api", api);
 
