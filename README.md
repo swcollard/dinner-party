@@ -17,7 +17,9 @@ menus or potluck sign-up; reminders; and a calendar feed. Mobile-first PWA, no a
 - **Permissions** (`src/lib/permissions.ts`): admins can do everything; a group sets default grants for members and
   admins can grant more per person. Hosts can always manage their own dinner.
 - **Notifications** (`src/notify/`): channel-agnostic `Notifier` interface; email (Resend) is implemented. Reminders:
-  host assigned, RSVP deadline, day-before, day-of. Delivery is idempotent via a log table.
+  host assigned, RSVP deadline, day-before, day-of. Delivery state is tracked per recipient: no double-sends, failures are
+  retried up to 3 times then given up on (logged), and a send abandoned by a dead worker is picked up again.
+- **Hourly cron**: sends due reminders and marks past dinners `done`. Past dinners are read-only immediately, not only after the job runs.
 - **Backups**: weekly cron exports every table to R2 (`src/backup.ts`).
 
 ## Develop
@@ -54,7 +56,8 @@ MOCK_EMAIL_LOG=/tmp/emails.jsonl SETUP_SECRET=... npm run smoke
 | Route | Who |
 |---|---|
 | `GET/PUT /api/me` | any member (profile, dietary info, address, notification channels) |
-| `GET /api/members`, `POST /api/members`, `PUT /api/members/order`, `PUT /api/members/:id`, `POST /api/members/:id/link` | `manage_members` (role/permission changes: admin only; anyone can reissue their own link) |
+| `GET /api/members`, `POST /api/members`, `PUT /api/members/order`, `PUT /api/members/:id` | `manage_members` (role/permission changes: admin only; a member hosting an upcoming dinner can't be deactivated) |
+| `POST /api/members/:id/link` | own link: anyone, link returned. Others': admins get the link back; `manage_members` delegates trigger an email to the member and never see it. Also rotates the member's calendar URL |
 | `PUT /api/group` | `manage_settings` |
 | `GET /api/dinners`, `GET /api/dinners/:id` | any member (dietary needs only for host/editors) |
 | `POST /api/dinners/schedule-next` | `schedule_dinners` |
@@ -62,7 +65,7 @@ MOCK_EMAIL_LOG=/tmp/emails.jsonl SETUP_SECRET=... npm run smoke
 | `PUT /api/dinners/:id/host` | `override_host` |
 | `POST /api/dinners/:id/cancel` | host or `cancel_dinners` |
 | `GET/POST /api/skips`, `DELETE /api/skips/:date` | `skip_weeks` (GET: any member) |
-| `PUT /api/dinners/:id/rsvp` | any member (yes requires dietary info) |
+| `PUT /api/dinners/:id/rsvp` | any member (yes/maybe require dietary info). Past dinners are read-only |
 | `POST/PUT/DELETE /api/dinners/:id/guests[/:guestId]` | any member for their own guests; host/editors for anyone's |
 | `POST/DELETE /api/dinners/:id/dishes[/:dishId]` | any member (potluck / "both" menus) |
 | `GET /calendar/:calendarToken/dinners.ics` | secret per-member URL |
@@ -71,7 +74,8 @@ MOCK_EMAIL_LOG=/tmp/emails.jsonl SETUP_SECRET=... npm run smoke
 
 ## Deploy
 
-Environments are `staging` and `production` in `wrangler.jsonc` (top level is local dev). Per environment:
+Environments are `staging` and `production` in `wrangler.jsonc`. The top level is local dev only, with its own worker/database/bucket
+names, so a bare `wrangler deploy` can't touch production; always deploy with `--env` (use the `deploy:*` scripts). Per environment:
 
 ```sh
 npx wrangler d1 create dinner-party-staging        # put the id in wrangler.jsonc

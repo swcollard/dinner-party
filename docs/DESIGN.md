@@ -26,12 +26,19 @@
   non-cancelled dinner's `rotation_host_id`, walking `members.rotation_position` and passing over inactive members.
 - `skip_dates` are weeks with no dinner (not dinners, so they consume no turn).
 - `access_tokens` store only SHA-256 hashes of personal links. `members.calendar_token` is a separate secret for the ICS URL.
-- `notifications` logs `(dinner, kind, recipient, channel)` so cron retries never double-send.
+- `notifications` logs `(dinner, kind, recipient, channel)` with a delivery state (`pending`/`sent`/`failed`, `attempts`). Sends are
+  claimed before sending so overlapping runs can't double-send; failures retry up to 3 times then are given up on and logged; a claim
+  stuck `pending` for 10+ minutes (worker died) is claimed again. This is at-least-once: very rarely a reminder may arrive twice.
+- A dinner is open only while `scheduled` and not past (group timezone). `closedReason()` enforces this on every write immediately;
+  the hourly cron then flips past dinners to `done`.
+- Reissuing a member's link also rotates their calendar token, because the calendar URL exposes host addresses.
 
 ## Privacy
 
 Addresses and allergy data are sensitive. Every `/api` route requires a valid link; results are `no-store` and `noindex`; the host
-address is only returned to members of the dinner's group; everyone's dietary needs go only to the host and editors; guest contact
+address is only returned to members of the dinner's group while the dinner is still on; everyone's dietary needs go only to the host and editors
+(required for yes *and* maybe; guests added without any show as "not provided"); a member-management delegate can never receive someone
+else's personal link (it is emailed to that member), since that would let them act as them; guest contact
 details are never returned by the API; the address appears in emails only on day-before/day-of reminders. Cross-group access returns 404.
 
 ## Confirmed assumptions
