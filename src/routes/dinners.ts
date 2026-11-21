@@ -5,6 +5,7 @@ import { can, canCancelDinner, canEditDinner } from "../lib/permissions";
 import { planNextDinner } from "../lib/rotation";
 import { todayIn } from "../lib/time";
 import { updateStatement } from "../lib/sql";
+import { notifyHostAssigned } from "../notify/reminders";
 
 export const dinnerRoutes = new Hono<AppBindings>();
 
@@ -61,6 +62,7 @@ dinnerRoutes.post("/dinners/schedule-next", async (c) => {
   )
     .bind(id, me.groupId, plan.rotationHostId, plan.rotationHostId, plan.date, group.default_start_time)
     .run();
+  c.executionCtx.waitUntil(notifyHostAssigned(c.env, id));
   return c.json({ id, hostId: plan.rotationHostId, date: plan.date }, 201);
 });
 
@@ -195,6 +197,7 @@ dinnerRoutes.put("/dinners/:id/host", async (c) => {
   if (!host) return c.json({ error: "host must be an active member of the group" }, 400);
 
   await c.env.DB.prepare("UPDATE dinners SET host_id = ? WHERE id = ?").bind(body.data.hostId, d.id).run();
+  c.executionCtx.waitUntil(notifyHostAssigned(c.env, d.id));
   return c.json({ ok: true, hostId: body.data.hostId, rotationHostId: d.rotation_host_id });
 });
 

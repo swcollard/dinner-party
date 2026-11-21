@@ -6,6 +6,11 @@ export interface Env {
   PUBLIC_BASE_URL: string;
   /** Shared secret protecting POST /admin/groups (platform operator only). */
   SETUP_SECRET: string;
+  /** Resend API key. Without it no notifications are sent (reminders become no-ops). */
+  RESEND_API_KEY?: string;
+  EMAIL_FROM?: string;
+  /** Override the email API endpoint (used to point tests at a local mock). */
+  EMAIL_API_URL?: string;
 }
 
 export interface AuthedMember {

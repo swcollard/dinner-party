@@ -4,6 +4,7 @@ import type { AppBindings } from "../env";
 import { can, PERMISSIONS } from "../lib/permissions";
 import { memberLink, provisionMember, reissueLink } from "../lib/provision";
 import { isUniqueViolation, updateStatement } from "../lib/sql";
+import { sendInvite } from "../notify/reminders";
 
 export const memberRoutes = new Hono<AppBindings>();
 
@@ -54,7 +55,19 @@ memberRoutes.post("/members", async (c) => {
   if (!body.success) return c.json({ error: body.error.issues }, 400);
   try {
     const m = await provisionMember(c.env.DB, { groupId: me.groupId, ...body.data, role: "member" });
-    return c.json({ id: m.id, link: memberLink(c.env.PUBLIC_BASE_URL, m.token) }, 201);
+    const link = memberLink(c.env.PUBLIC_BASE_URL, m.token);
+    c.executionCtx.waitUntil(
+      (async () => {
+        const g = await c.env.DB.prepare("SELECT name FROM groups WHERE id = ?").bind(me.groupId).first<{ name: string }>();
+        await sendInvite(
+          c.env,
+          { key: `member:${m.id}`, name: body.data.name, email: body.data.email, phone: body.data.phone, channels: ["email"] },
+          g?.name ?? "the group",
+          link,
+        );
+      })(),
+    );
+    return c.json({ id: m.id, link }, 201);
   } catch (e) {
     if (isUniqueViolation(e)) return c.json({ error: "a member with that email already exists" }, 409);
     throw e;

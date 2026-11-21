@@ -131,5 +131,42 @@ req "$OTHER" POST "/api/dinners/$ID1/cancel";    check "other group can't cancel
 req "$OTHER" PUT "/api/members/$BEA_ID" '{"active":false}'; check "other group can't edit members" "$CODE" 404
 req "$OTHER" GET /api/dinners;                   check "other group sees no dinners" "$(echo "$BODY" | jq '.dinners|length')" 0
 
+# Reminders need a mock email server and `wrangler dev --test-scheduled`:
+#   scripts/mock-email.py /tmp/emails.jsonl 9999 &
+#   .dev.vars: RESEND_API_KEY=test, EMAIL_API_URL=http://localhost:9999/emails
+#   MOCK_EMAIL_LOG=/tmp/emails.jsonl scripts/smoke.sh
+if [ -n "${MOCK_EMAIL_LOG:-}" ]; then
+  echo "== notifications (mock email)"
+  RUN=$RANDOM
+  sent_to() { jq -c --arg to "$1" 'select(.to[0]==$to)' "$MOCK_EMAIL_LOG" | wc -l | tr -d ' '; }
+  subjects() { jq -r --arg to "$1" 'select(.to[0]==$to)|.subject' "$MOCK_EMAIL_LOG" | sort | tr '\n' '|'; }
+  TOKR=$(curl -s -X POST "$BASE/admin/groups" -H "x-setup-secret: $SECRET" -H 'content-type: application/json' \
+    -d "{\"name\":\"Reminders\",\"admin\":{\"name\":\"host$RUN\",\"email\":\"host$RUN@example.com\"}}" | jq -r '.adminLink | split("#t=")[1]')
+  TOMORROW_DOW=$(TZ=America/Chicago date -d tomorrow +%w)
+  req "$TOKR" PUT /api/group "{\"dinnerWeekday\":$TOMORROW_DOW,\"reminderHour\":0,\"rsvpDeadlineDays\":1}"
+  req "$TOKR" PUT /api/me '{"dietary":"none","address":"9 Elm St"}'
+  req "$TOKR" POST /api/members "{\"name\":\"yes$RUN\",\"email\":\"yes$RUN@example.com\"}"; YES=$(tok "$BODY")
+  req "$TOKR" POST /api/members "{\"name\":\"quiet$RUN\",\"email\":\"quiet$RUN@example.com\"}"
+  req "$YES" PUT /api/me '{"dietary":"none"}'
+  req "$TOKR" POST /api/dinners/schedule-next; RD=$(echo "$BODY" | jq -r .id)
+  check "dinner lands on tomorrow (group timezone)" "$(echo "$BODY" | jq -r .date)" "$(TZ=America/Chicago date -d tomorrow +%F)"
+  req "$YES" PUT "/api/dinners/$RD/rsvp" '{"response":"yes"}'
+  req "$YES" POST "/api/dinners/$RD/guests" "{\"name\":\"Pat\",\"email\":\"pat$RUN@example.com\"}"
+  sleep 1
+  check "new members get an invite email with their link" "$(jq -r --arg to "quiet$RUN@example.com" 'select(.to[0]==$to)|.text' "$MOCK_EMAIL_LOG" | grep -c '#t=')" 1
+  check "new host is told it's their turn" "$(subjects "host$RUN@example.com")" "You're hosting Reminders on $(date -u -d "$(TZ=America/Chicago date -d tomorrow +%F)" +'%A, %b %-d')|"
+  trigger() { curl -s -o /dev/null "$BASE/cdn-cgi/handler/scheduled?cron=0+*+*+*+*"; sleep 2; }
+  trigger
+  check "host gets day-before reminder" "$(subjects "host$RUN@example.com" | grep -c "Tomorrow: dinner at host$RUN's")" 1
+  check "'yes' member gets day-before reminder" "$(subjects "yes$RUN@example.com" | grep -c "Tomorrow: dinner at host$RUN's")" 1
+  check "guest with an email gets day-before reminder" "$(subjects "pat$RUN@example.com")" "Tomorrow: dinner at host$RUN's|"
+  check "non-responder gets the RSVP reminder, not the day-before one" "$(subjects "quiet$RUN@example.com" | tr '|' '\n' | grep -c 'RSVP today')" 1
+  check "day-before email includes the address" "$(jq -r --arg to "yes$RUN@example.com" 'select(.to[0]==$to)|.text' "$MOCK_EMAIL_LOG" | grep -c 'Where: 9 Elm St')" 1
+  check "RSVP reminder does not include the address" "$(jq -r --arg to "quiet$RUN@example.com" 'select(.to[0]==$to and (.subject|startswith("RSVP")))|.text' "$MOCK_EMAIL_LOG" | grep -c '9 Elm St')" 0
+  BEFORE=$(wc -l < "$MOCK_EMAIL_LOG")
+  trigger
+  check "re-running the cron sends nothing twice" "$(( $(wc -l < "$MOCK_EMAIL_LOG") - BEFORE ))" 0
+fi
+
 echo
 [ "$FAILS" -eq 0 ] && echo "ALL PASSED" || { echo "$FAILS FAILED"; exit 1; }

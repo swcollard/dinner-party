@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { requireMember } from "./auth";
 import type { AppBindings } from "./env";
-import { runReminders } from "./notify";
+import { runReminders } from "./notify/reminders";
 import { adminRoutes } from "./routes/admin";
 import { attendanceRoutes } from "./routes/attendance";
 import { calendarRoutes } from "./routes/calendar";
