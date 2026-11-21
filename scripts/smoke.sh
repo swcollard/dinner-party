@@ -33,6 +33,8 @@ add_member() { # adminToken name -> prints "id token"
 dow() { date -u -d "$1 +$2 day" +%F; }
 # Fire the hourly cron once (needs `wrangler dev --test-scheduled`).
 trigger() { curl -s -o /dev/null "$BASE/cdn-cgi/handler/scheduled?cron=0+*+*+*+*"; sleep 2; }
+# Read rows from the local D1 as colon-joined values, one row per line.
+local_query() { (cd "$ROOT" && npx wrangler d1 execute DB --local --json --command "$1" 2>/dev/null | jq -r '.[0].results[] | to_entries | map(.value|tostring) | join(":")'); }
 # Run SQL against the local D1 (test setup only: lets us back-date a dinner).
 local_sql() { (cd "$ROOT" && npx wrangler d1 execute DB --local --command "$1" >/dev/null 2>&1); }
 
@@ -200,13 +202,17 @@ if [ -n "${MOCK_EMAIL_LOG:-}" ]; then
   TOMORROW_DOW=$(TZ=America/Chicago date -d tomorrow +%w)
   req "$TOKR" PUT /api/group "{\"dinnerWeekday\":$TOMORROW_DOW,\"reminderHour\":0,\"rsvpDeadlineDays\":1}"
   req "$TOKR" PUT /api/me '{"dietary":"none","address":"9 Elm St"}'
-  req "$TOKR" POST /api/members "{\"name\":\"yes$RUN\",\"email\":\"yes$RUN@example.com\"}"; YES=$(tok "$BODY")
+  req "$TOKR" POST /api/members "{\"name\":\"yes$RUN\",\"email\":\"yes$RUN@example.com\"}"; YES_ID=$(echo "$BODY" | jq -r .id); YES=$(tok "$BODY")
   req "$TOKR" POST /api/members "{\"name\":\"quiet$RUN\",\"email\":\"quiet$RUN@example.com\"}"; QUIET_ID=$(echo "$BODY" | jq -r .id); QUIET=$(tok "$BODY")
   req "$YES" PUT /api/me '{"dietary":"none"}'
   req "$TOKR" POST /api/dinners/schedule-next; RD=$(echo "$BODY" | jq -r .id)
   check "dinner lands on tomorrow (group timezone)" "$(echo "$BODY" | jq -r .date)" "$(TZ=America/Chicago date -d tomorrow +%F)"
   req "$YES" PUT "/api/dinners/$RD/rsvp" '{"response":"yes"}'
   req "$YES" POST "/api/dinners/$RD/guests" "{\"name\":\"Pat\",\"email\":\"pat$RUN@example.com\"}"
+  # "bounce" addresses make the mock return HTTP 500: a permanently failing recipient.
+  req "$TOKR" POST /api/members "{\"name\":\"bounce$RUN\",\"email\":\"bounce$RUN@example.com\"}"; BOUNCE_ID=$(echo "$BODY" | jq -r .id); BOUNCE=$(tok "$BODY")
+  req "$BOUNCE" PUT /api/me '{"dietary":"none"}'
+  req "$BOUNCE" PUT "/api/dinners/$RD/rsvp" '{"response":"yes"}'
   sleep 1
   check "new members get an invite email with their link" "$(jq -r --arg to "quiet$RUN@example.com" 'select(.to[0]==$to)|.text' "$MOCK_EMAIL_LOG" | grep -c '#t=')" 1
   check "new host is told it's their turn" "$(subjects "host$RUN@example.com")" "You're hosting Reminders on $(date -u -d "$(TZ=America/Chicago date -d tomorrow +%F)" +'%A, %b %-d')|"
@@ -217,9 +223,24 @@ if [ -n "${MOCK_EMAIL_LOG:-}" ]; then
   check "non-responder gets the RSVP reminder, not the day-before one" "$(subjects "quiet$RUN@example.com" | tr '|' '\n' | grep -c 'RSVP today')" 1
   check "day-before email includes the address" "$(jq -r --arg to "yes$RUN@example.com" 'select(.to[0]==$to)|.text' "$MOCK_EMAIL_LOG" | grep -c 'Where: 9 Elm St')" 1
   check "RSVP reminder does not include the address" "$(jq -r --arg to "quiet$RUN@example.com" 'select(.to[0]==$to and (.subject|startswith("RSVP")))|.text' "$MOCK_EMAIL_LOG" | grep -c '9 Elm St')" 0
+  tomorrow_count() { jq -r --arg to "$1" 'select(.to[0]==$to and (.subject|startswith("Tomorrow")))|.subject' "$MOCK_EMAIL_LOG" | wc -l | tr -d ' '; }
+  check "a failing address was attempted once on the first run" "$(tomorrow_count "bounce$RUN@example.com")" 1
+  check "...and recorded as failed" "$(local_query "SELECT status, attempts FROM notifications WHERE recipient='member:$BOUNCE_ID' AND kind='day_before'")" "failed:1"
+  trigger; trigger
+  check "a failing address is retried on later runs, up to 3 attempts" "$(tomorrow_count "bounce$RUN@example.com")" 3
+  check "...and its state shows it has been given up on" "$(local_query "SELECT status, attempts FROM notifications WHERE recipient='member:$BOUNCE_ID' AND kind='day_before'")" "failed:3"
   BEFORE=$(wc -l < "$MOCK_EMAIL_LOG")
   trigger
   check "re-running the cron sends nothing twice" "$(( $(wc -l < "$MOCK_EMAIL_LOG") - BEFORE ))" 0
+
+  YES_ROW="recipient='member:$YES_ID' AND kind='day_before'"
+  local_sql "UPDATE notifications SET status='pending', attempts=1, updated_at=datetime('now') WHERE $YES_ROW"
+  trigger
+  check "a fresh in-flight claim is not sent a second time" "$(tomorrow_count "yes$RUN@example.com")" 1
+  local_sql "UPDATE notifications SET status='pending', attempts=1, updated_at=datetime('now','-30 minutes') WHERE $YES_ROW"
+  trigger
+  check "a claim abandoned mid-send (worker died) is picked up again" "$(tomorrow_count "yes$RUN@example.com")" 2
+  check "...and then recorded as sent" "$(local_query "SELECT status, attempts FROM notifications WHERE $YES_ROW")" "sent:2"
 
   echo "== delegated link reissue is emailed, not returned"
   req "$TOKR" POST /api/members "{\"name\":\"dele$RUN\",\"email\":\"dele$RUN@example.com\"}"; DELE_ID=$(echo "$BODY" | jq -r .id); DELE=$(tok "$BODY")
