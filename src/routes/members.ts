@@ -4,6 +4,7 @@ import type { AppBindings } from "../env";
 import { can, PERMISSIONS } from "../lib/permissions";
 import { memberLink, provisionMember, reissueLink } from "../lib/provision";
 import { isUniqueViolation, updateStatement } from "../lib/sql";
+import { todayIn } from "../lib/time";
 import { canNotify, sendInvite, sendNewLink } from "../notify/reminders";
 
 export const memberRoutes = new Hono<AppBindings>();
@@ -129,6 +130,27 @@ memberRoutes.put("/members/:id", async (c) => {
       .bind(me.groupId)
       .first<{ n: number }>();
     if ((row?.n ?? 0) <= 1) return c.json({ error: "a group needs at least one active admin" }, 409);
+  }
+
+  // Deactivating someone who is hosting an upcoming dinner would leave it with a host who can't
+  // log in or be notified. Make the organizer hand it over (or cancel it) first.
+  if (patch.active === false) {
+    const hosting = await c.env.DB.prepare(
+      `SELECT id, date FROM dinners
+       WHERE group_id = ? AND host_id = ? AND status = 'scheduled' AND date >= ? ORDER BY date`,
+    )
+      .bind(me.groupId, c.req.param("id"), todayIn(me.timezone, new Date()))
+      .all<{ id: string; date: string }>();
+    if (hosting.results.length > 0) {
+      return c.json(
+        {
+          error: "hosts_upcoming_dinners",
+          message: "Change the host (or cancel these dinners) before deactivating this member.",
+          dinners: hosting.results,
+        },
+        409,
+      );
+    }
   }
 
   const stmt = updateStatement(

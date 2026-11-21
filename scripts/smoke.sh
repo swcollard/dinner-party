@@ -79,6 +79,11 @@ req "$ALEX" PUT /api/group '{"memberPermissions":["skip_weeks"]}'; check "group 
 req "$CAL" POST /api/skips "{\"date\":\"$(dow "$D6" 70)\"}"; check "default grant applies to members" "$CODE" 201
 req "$ALEX" PUT "/api/members/$ALEX_ID" '{"active":false}'
 check "can't deactivate the last admin" "$CODE" 409
+req "$ALEX" PUT "/api/members/$CAL_ID" '{"active":false}'; check "can't deactivate a member who is hosting an upcoming dinner" "$CODE" 409
+check "...and the response says which dinners" "$(echo "$BODY" | jq -r '.error, (.dinners|length > 0)' | tr '\n' ' ')" "hosts_upcoming_dinners true "
+read TMP_ID TMP < <(add_member "$ALEX" tmp)
+req "$ALEX" PUT "/api/members/$TMP_ID" '{"active":false}'; check "deactivating a member with no dinners works" "$CODE" 200
+req "$TMP" GET /api/me; check "a deactivated member's link stops working" "$CODE" 401
 req "$ALEX" PUT "/api/members/order" "{\"ids\":[\"$CAL_ID\",\"$BEA_ID\"]}"; check "order must list everyone" "$CODE" 400
 
 echo "== dinner detail & privacy"
