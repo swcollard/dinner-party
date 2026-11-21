@@ -1,0 +1,22 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # Bundles the Worker for each environment without deploying.
+      - run: npx wrangler deploy --dry-run
+      - run: npx wrangler deploy --dry-run --env staging
+      - run: npx wrangler deploy --dry-run --env production
