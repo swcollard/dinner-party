@@ -5,7 +5,7 @@ import { closedReason } from "../lib/dinner-state";
 import { can, canCancelDinner, canEditDinner } from "../lib/permissions";
 import { planNextDinner } from "../lib/rotation";
 import { todayIn } from "../lib/time";
-import { updateStatement } from "../lib/sql";
+import { isUniqueViolation, updateStatement } from "../lib/sql";
 import { notifyHostAssigned } from "../notify/reminders";
 
 export const dinnerRoutes = new Hono<AppBindings>();
@@ -59,12 +59,20 @@ dinnerRoutes.post("/dinners/schedule-next", async (c) => {
   if (!plan) return c.json({ error: "no eligible host" }, 409);
 
   const id = crypto.randomUUID();
-  await c.env.DB.prepare(
-    `INSERT INTO dinners (id, group_id, host_id, rotation_host_id, date, start_time)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(id, me.groupId, plan.rotationHostId, plan.rotationHostId, plan.date, group.default_start_time)
-    .run();
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO dinners (id, group_id, host_id, rotation_host_id, date, start_time)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(id, me.groupId, plan.rotationHostId, plan.rotationHostId, plan.date, group.default_start_time)
+      .run();
+  } catch (e) {
+    // Two organizers scheduling at once computed the same date; UNIQUE(group_id, date) let only one in.
+    if (isUniqueViolation(e)) {
+      return c.json({ error: "conflict", message: "Another dinner was just scheduled. Refresh and try again." }, 409);
+    }
+    throw e;
+  }
   c.executionCtx.waitUntil(notifyHostAssigned(c.env, id));
   return c.json({ id, hostId: plan.rotationHostId, date: plan.date }, 201);
 });

@@ -162,6 +162,12 @@ trigger
 req "$ALEX" GET "/api/dinners/$PAST"; check "hourly job marks it done" "$(echo "$BODY" | jq -r .status)" done
 req "$ALEX" GET "/api/dinners/$ID1";  check "upcoming dinners are left alone" "$(echo "$BODY" | jq -r .status)" scheduled
 
+echo "== concurrent scheduling"
+RACE=$( { for i in 1 2 3 4 5 6; do curl -s -o /dev/null -w '%{http_code}\n' -X POST "$BASE/api/dinners/schedule-next" -H "Authorization: Bearer $ALEX" & done; wait; } | sort | uniq -c | tr -s ' ' | tr '\n' ';')
+check "six simultaneous schedule requests: no 500s (only 201 or 409)" "$(echo "$RACE" | grep -cE ' 5[0-9][0-9]')" 0
+check "...and at least one succeeded" "$(echo "$RACE" | grep -c ' 201')" 1
+echo "       ($RACE)"
+
 echo "== multi-tenancy isolation"
 OTHER=$(new_group "Other Group" zed)
 req "$OTHER" GET "/api/dinners/$ID1";            check "other group can't read dinner" "$CODE" 404
