@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { requireMember } from "./auth";
+import { BACKUP_CRON, runBackup } from "./backup";
 import type { AppBindings } from "./env";
 import { runReminders } from "./notify/reminders";
 import { adminRoutes } from "./routes/admin";
@@ -37,7 +38,8 @@ app.route("/api", api);
 
 export default {
   fetch: app.fetch,
-  scheduled: (_event: ScheduledController, env: AppBindings["Bindings"], ctx: ExecutionContext) => {
-    ctx.waitUntil(runReminders(env, new Date()));
+  // Two crons (see wrangler.jsonc): hourly reminders, weekly backup.
+  scheduled: (event: ScheduledController, env: AppBindings["Bindings"], ctx: ExecutionContext) => {
+    ctx.waitUntil(event.cron === BACKUP_CRON ? runBackup(env, new Date()) : runReminders(env, new Date()));
   },
 } satisfies ExportedHandler<AppBindings["Bindings"]>;

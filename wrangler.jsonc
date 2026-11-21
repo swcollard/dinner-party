@@ -12,11 +12,13 @@
       "migrations_dir": "migrations"
     }
   ],
-  // Daily at 15:00 UTC: send RSVP / day-before reminders.
-  "triggers": { "crons": ["0 15 * * *"] },
+  "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "dinner-party-backups" }],
+  // Hourly: reminders (each group's own reminder hour/timezone decides what is due).
+  // Weekly Sunday 09:00 UTC: database backup to R2 (must equal BACKUP_CRON in src/backup.ts).
+  "triggers": { "crons": ["0 * * * *", "0 9 * * 0"] },
   "vars": {
     "PUBLIC_BASE_URL": "http://localhost:8787"
   }
   // Secrets (wrangler secret put ...): SETUP_SECRET (later: RESEND_API_KEY)
-  // Later: "r2_buckets": [{ "binding": "PHOTOS", "bucket_name": "dinner-party-photos" }]
+  // Later: photos -> add a second R2 bucket binding (PHOTOS).
 }
