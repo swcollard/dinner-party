@@ -5,12 +5,15 @@
   "type": "module",
   "description": "Coordinate dinner party hosting with friends (Cloudflare Workers + D1)",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "dev": "wrangler dev --test-scheduled",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "db:migrate:local": "wrangler d1 migrations apply dinner-party --local",
-    "db:migrate:remote": "wrangler d1 migrations apply dinner-party --remote"
+    "smoke": "scripts/smoke.sh",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:migrate:staging": "wrangler d1 migrations apply DB --env staging --remote",
+    "db:migrate:production": "wrangler d1 migrations apply DB --env production --remote",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:production": "wrangler deploy --env production"
   },
   "dependencies": {
     "hono": "^4.13.19",

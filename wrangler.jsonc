@@ -3,22 +3,53 @@
   "name": "dinner-party",
   "main": "src/index.ts",
   "compatibility_date": "2026-11-01",
+  // Logs + errors in the Cloudflare dashboard (Workers > Observability).
+  "observability": { "enabled": true },
+
+  // Top level = local development (`wrangler dev`). Deployed environments are below.
+  // Bindings, vars and crons are NOT inherited by [env.*], so each one declares its own.
   "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "dinner-party",
-      // Replace after running: wrangler d1 create dinner-party
-      "database_id": "00000000-0000-0000-0000-000000000000",
-      "migrations_dir": "migrations"
-    }
+    { "binding": "DB", "database_name": "dinner-party", "database_id": "local", "migrations_dir": "migrations" }
   ],
   "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "dinner-party-backups" }],
   // Hourly: reminders (each group's own reminder hour/timezone decides what is due).
   // Weekly Sunday 09:00 UTC: database backup to R2 (must equal BACKUP_CRON in src/backup.ts).
   "triggers": { "crons": ["0 * * * *", "0 9 * * 0"] },
-  "vars": {
-    "PUBLIC_BASE_URL": "http://localhost:8787"
+  "vars": { "PUBLIC_BASE_URL": "http://localhost:8787" },
+
+  // Secrets are per environment: wrangler secret put SETUP_SECRET --env <name>
+  // (and RESEND_API_KEY, plus EMAIL_FROM as a var once a sending domain is verified).
+  "env": {
+    "staging": {
+      "name": "dinner-party-staging",
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "dinner-party-staging",
+          // wrangler d1 create dinner-party-staging
+          "database_id": "00000000-0000-0000-0000-000000000001",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "dinner-party-backups-staging" }],
+      "triggers": { "crons": ["0 * * * *", "0 9 * * 0"] },
+      "vars": { "PUBLIC_BASE_URL": "https://dinner-party-staging.example.workers.dev" }
+    },
+    "production": {
+      "name": "dinner-party",
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "dinner-party",
+          // wrangler d1 create dinner-party
+          "database_id": "00000000-0000-0000-0000-000000000002",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "dinner-party-backups" }],
+      "triggers": { "crons": ["0 * * * *", "0 9 * * 0"] },
+      // Replace with the custom domain once attached to the Worker.
+      "vars": { "PUBLIC_BASE_URL": "https://dinner-party.example.com" }
+    }
   }
-  // Secrets (wrangler secret put ...): SETUP_SECRET (later: RESEND_API_KEY)
-  // Later: photos -> add a second R2 bucket binding (PHOTOS).
 }
