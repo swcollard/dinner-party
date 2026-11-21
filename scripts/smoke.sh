@@ -103,6 +103,26 @@ req "$CAL" DELETE "/api/dinners/$ID1/guests/$GUEST"; check "other member can't r
 req "$BEA" PUT "/api/dinners/$ID1/guests/$GUEST" '{"response":"no"}'; check "inviter updates guest response" "$CODE" 200
 req "$ALEX" DELETE "/api/dinners/$ID1/guests/$GUEST"; check "host removes guest" "$CODE" 200
 
+echo "== potluck / menu modes"
+req "$ALEX" POST /api/dinners/schedule-next; HOSTONLY=$(echo "$BODY" | jq -r .id)
+req "$BEA" POST "/api/dinners/$HOSTONLY/dishes" '{"description":"Salad"}'; check "host-menu dinner rejects dish sign-ups" "$CODE" 409
+req "$BEA" POST "/api/dinners/$ID1/dishes" '{"course":"dessert","description":"Lemon tart","dietaryNotes":"contains gluten"}'; check "dish sign-up on a 'both' dinner" "$CODE" 201
+DISH=$(echo "$BODY" | jq -r .id)
+req "$BEA" POST "/api/dinners/$ID1/dishes" '{"course":"brunch","description":"x"}'; check "unknown course rejected" "$CODE" 400
+req "$CAL" DELETE "/api/dinners/$ID1/dishes/$DISH"; check "others can't remove your dish" "$CODE" 403
+req "$BEA" GET "/api/dinners/$ID1"; check "detail lists the dish with its notes" "$(echo "$BODY" | jq -r '.dishes[0]|"\(.member_name):\(.description):\(.dietary_notes)"')" "bea:Lemon tart:contains gluten"
+req "$ALEX" DELETE "/api/dinners/$ID1/dishes/$DISH"; check "host can remove a dish" "$CODE" 200
+
+echo "== calendar feed"
+req "$BEA" GET /api/me; FEED=$(echo "$BODY" | jq -r .calendarUrl | sed "s#^[^/]*//[^/]*##")
+ICS=$(curl -s "$BASE$FEED"); ICS_CODE=$(curl -s -o /dev/null -w '%{http_code}' "$BASE$FEED")
+check "member's secret feed URL works" "$ICS_CODE" 200
+check "feed has events with the host's address" "$([ "$(echo "$ICS" | grep -c 'LOCATION:1 Main St')" -ge 1 ] && echo y)" y
+check "feed omits cancelled dinners" "$(echo "$ICS" | grep -c "DTSTART:$(echo "$D2" | tr -d -)")" 0
+check "wrong token -> 404" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/calendar/nope/dinners.ics")" 404
+OTHER_FEED=$(req "$(new_group "Third" tess)" GET /api/me; echo "$BODY" | jq -r .calendarUrl | sed "s#^[^/]*//[^/]*##")
+check "other group's feed has none of our dinners" "$(curl -s "$BASE$OTHER_FEED" | grep -c VEVENT)" 0
+
 echo "== multi-tenancy isolation"
 OTHER=$(new_group "Other Group" zed)
 req "$OTHER" GET "/api/dinners/$ID1";            check "other group can't read dinner" "$CODE" 404
