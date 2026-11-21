@@ -3,7 +3,8 @@ import { z } from "zod";
 import { requireMember } from "./auth";
 import type { AppBindings } from "./env";
 import { buildIcs } from "./lib/ics";
-import { nextHost, nextWeekday } from "./lib/rotation";
+import { planNextDinner } from "./lib/rotation";
+import { todayIn } from "./lib/time";
 import { runReminders } from "./notify";
 
 const app = new Hono<AppBindings>();
@@ -27,39 +28,50 @@ app.get("/api/dinners", async (c) => {
   return c.json({ dinners: results });
 });
 
-// Admin: schedule the next dinner, picking the host by fairness.
+// Admin: schedule the next dinner using the fixed rotation order.
 app.post("/api/dinners/schedule-next", async (c) => {
   const { groupId, role } = c.get("member");
   if (role !== "admin") return c.json({ error: "forbidden" }, 403);
 
-  const [members, history, last] = await Promise.all([
-    c.env.DB.prepare("SELECT id, active FROM members WHERE group_id = ?").bind(groupId).all(),
-    c.env.DB.prepare("SELECT host_id, date, status FROM dinners WHERE group_id = ?")
+  const [group, members, dinners, skips] = await Promise.all([
+    c.env.DB.prepare(
+      "SELECT timezone, dinner_weekday, default_start_time FROM groups WHERE id = ?",
+    )
       .bind(groupId)
-      .all(),
-    c.env.DB.prepare("SELECT MAX(date) AS d FROM dinners WHERE group_id = ?")
+      .first<{ timezone: string; dinner_weekday: number; default_start_time: string }>(),
+    c.env.DB.prepare("SELECT id, rotation_position, active FROM members WHERE group_id = ?")
       .bind(groupId)
-      .first<{ d: string | null }>(),
+      .all<{ id: string; rotation_position: number; active: number }>(),
+    c.env.DB.prepare("SELECT date, status, rotation_host_id FROM dinners WHERE group_id = ?")
+      .bind(groupId)
+      .all<{ date: string; status: "scheduled" | "cancelled" | "done"; rotation_host_id: string | null }>(),
+    c.env.DB.prepare("SELECT date FROM skip_dates WHERE group_id = ?")
+      .bind(groupId)
+      .all<{ date: string }>(),
   ]);
+  if (!group) return c.json({ error: "group not found" }, 404);
 
-  const hostId = nextHost(
-    (members.results as { id: string; active: number }[]).map((m) => ({
-      id: m.id,
-      active: !!m.active,
+  const plan = planNextDinner({
+    members: members.results.map((m) => ({ id: m.id, position: m.rotation_position, active: !!m.active })),
+    dinners: dinners.results.map((d) => ({
+      date: d.date,
+      status: d.status,
+      rotationHostId: d.rotation_host_id,
     })),
-    (history.results as { host_id: string; date: string; status: "scheduled" | "cancelled" | "done" }[]).map(
-      (d) => ({ hostId: d.host_id, date: d.date, status: d.status }),
-    ),
-  );
-  if (!hostId) return c.json({ error: "no eligible host" }, 409);
+    skips: new Set(skips.results.map((s) => s.date)),
+    weekday: group.dinner_weekday,
+    today: todayIn(group.timezone, new Date()),
+  });
+  if (!plan) return c.json({ error: "no eligible host" }, 409);
 
-  const today = new Date().toISOString().slice(0, 10);
-  const date = nextWeekday(last?.d && last.d > today ? last.d : today, 0); // Sundays
   const id = crypto.randomUUID();
-  await c.env.DB.prepare("INSERT INTO dinners (id, group_id, host_id, date) VALUES (?, ?, ?, ?)")
-    .bind(id, groupId, hostId, date)
+  await c.env.DB.prepare(
+    `INSERT INTO dinners (id, group_id, host_id, rotation_host_id, date, start_time)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(id, groupId, plan.rotationHostId, plan.rotationHostId, plan.date, group.default_start_time)
     .run();
-  return c.json({ id, hostId, date }, 201);
+  return c.json({ id, hostId: plan.rotationHostId, date: plan.date }, 201);
 });
 
 const rsvpBody = z.object({
