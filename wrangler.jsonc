@@ -15,8 +15,8 @@
   // Daily at 15:00 UTC: send RSVP / day-before reminders.
   "triggers": { "crons": ["0 15 * * *"] },
   "vars": {
-    "DEFAULT_TIMEZONE": "America/Chicago"
+    "PUBLIC_BASE_URL": "http://localhost:8787"
   }
-  // Secrets (wrangler secret put ...): SESSION_SECRET, RESEND_API_KEY
+  // Secrets (wrangler secret put ...): SETUP_SECRET (later: RESEND_API_KEY)
   // Later: "r2_buckets": [{ "binding": "PHOTOS", "bucket_name": "dinner-party-photos" }]
 }
