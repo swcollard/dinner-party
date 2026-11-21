@@ -1,6 +1,8 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "dinner-party",
+  // Local-dev config only. The name is deliberately NOT "dinner-party": production uses that name, so a
+  // bare `wrangler deploy` (no --env) must never be able to overwrite it. Deploy with --env staging|production.
+  "name": "dinner-party-local-dev",
   "main": "src/index.ts",
   "compatibility_date": "2026-11-01",
   // Logs + errors in the Cloudflare dashboard (Workers > Observability).
@@ -16,9 +18,9 @@
   // Top level = local development (`wrangler dev`). Deployed environments are below.
   // Bindings, vars and crons are NOT inherited by [env.*], so each one declares its own.
   "d1_databases": [
-    { "binding": "DB", "database_name": "dinner-party", "database_id": "local", "migrations_dir": "migrations" }
+    { "binding": "DB", "database_name": "dinner-party-local", "database_id": "local", "migrations_dir": "migrations" }
   ],
-  "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "dinner-party-backups" }],
+  "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "dinner-party-backups-local" }],
   // Hourly: reminders (each group's own reminder hour/timezone decides what is due).
   // Weekly Sunday 09:00 UTC: database backup to R2 (must equal BACKUP_CRON in src/backup.ts).
   "triggers": { "crons": ["0 * * * *", "0 9 * * 0"] },
