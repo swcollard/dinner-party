@@ -6,6 +6,13 @@
   // Logs + errors in the Cloudflare dashboard (Workers > Observability).
   "observability": { "enabled": true },
 
+  // Static PWA shell. The Worker runs first only for API-ish paths; everything else is served from ./public.
+  "assets": {
+    "directory": "./public",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/calendar/*", "/admin/*", "/healthz"]
+  },
+
   // Top level = local development (`wrangler dev`). Deployed environments are below.
   // Bindings, vars and crons are NOT inherited by [env.*], so each one declares its own.
   "d1_databases": [

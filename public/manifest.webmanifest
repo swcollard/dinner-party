@@ -1,0 +1,11 @@
+{
+  "name": "Dinner Party",
+  "short_name": "Dinner",
+  "description": "Coordinate who hosts dinner next.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fffaf5",
+  "theme_color": "#7c2d12",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

@@ -95,6 +95,7 @@ req "$BEA" PUT "/api/dinners/$ID2/rsvp" '{"response":"yes"}'; check "can't RSVP 
 req "$BEA" POST "/api/dinners/$ID1/guests" '{"name":"Pat","email":"pat@example.com","dietary":"peanut allergy"}'; check "member adds a guest with contact" "$CODE" 201
 GUEST=$(echo "$BODY" | jq -r .id)
 req "$BEA" POST "/api/dinners/$ID1/guests" '{"name":"Bad","email":"not-an-email"}'; check "guest email validated" "$CODE" 400
+req "$BEA" GET /api/dinners; check "dinner list includes my own RSVP" "$(echo "$BODY" | jq -r --arg id "$ID1" '.dinners[]|select(.id==$id)|.my_response')" yes
 req "$ALEX" GET "/api/dinners/$ID1"
 check "headcount = 2 members + 1 guest" "$(echo "$BODY" | jq .headcount)" 3
 check "host sees dietary needs (sesame + peanut; 'none' omitted)" "$(echo "$BODY" | jq '.dietary|map(.dietary)|sort|join(",")' -r)" "peanut allergy,severe sesame allergy"

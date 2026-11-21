@@ -10,13 +10,15 @@ import { notifyHostAssigned } from "../notify/reminders";
 export const dinnerRoutes = new Hono<AppBindings>();
 
 dinnerRoutes.get("/dinners", async (c) => {
-  const { groupId, timezone } = c.get("member");
+  const { id, groupId, timezone } = c.get("member");
   const { results } = await c.env.DB.prepare(
-    `SELECT d.*, m.name AS host_name FROM dinners d
+    `SELECT d.*, m.name AS host_name,
+            (SELECT response FROM rsvps WHERE dinner_id = d.id AND member_id = ?) AS my_response
+     FROM dinners d
      JOIN members m ON m.id = d.host_id
      WHERE d.group_id = ? AND d.date >= ? ORDER BY d.date`,
   )
-    .bind(groupId, todayIn(timezone, new Date()))
+    .bind(id, groupId, todayIn(timezone, new Date()))
     .all();
   return c.json({ dinners: results });
 });
