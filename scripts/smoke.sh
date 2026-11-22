@@ -253,6 +253,13 @@ if [ -n "${MOCK_EMAIL_LOG:-}" ]; then
   trigger; trigger
   check "a failing address is retried on later runs, up to 3 attempts" "$(tomorrow_count "bounce$RUN@example.com")" 3
   check "...and its state shows it has been given up on" "$(local_query "SELECT status, attempts FROM notifications WHERE recipient='member:$BOUNCE_ID' AND kind='day_before'")" "failed:3"
+  BH=$(curl -s -X POST "$BASE/admin/groups" -H "x-setup-secret: $SECRET" -H 'content-type: application/json' \
+    -d "{\"name\":\"Bounce host\",\"admin\":{\"name\":\"bh$RUN\",\"email\":\"bouncehost$RUN@example.com\"}}" | jq -r '.adminLink | split("#t=")[1]')
+  req "$BH" POST /api/dinners/schedule-next; sleep 1
+  hosting_count() { jq -r --arg to "bouncehost$RUN@example.com" 'select(.to[0]==$to and (.subject|startswith("You'"'"'re hosting")))|.subject' "$MOCK_EMAIL_LOG" | wc -l | tr -d ' '; }
+  check "host-assigned email fails at schedule time" "$(hosting_count)" 1
+  trigger; trigger
+  check "...and the cron retries it, up to 3 attempts in all" "$(hosting_count)" 3
   BEFORE=$(wc -l < "$MOCK_EMAIL_LOG")
   trigger
   check "re-running the cron sends nothing twice" "$(( $(wc -l < "$MOCK_EMAIL_LOG") - BEFORE ))" 0
