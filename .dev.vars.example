@@ -1,2 +1,8 @@
+# Local secrets for `npm run dev` (copy to .dev.vars, which is git-ignored).
 SETUP_SECRET=change-me
 PUBLIC_BASE_URL=http://localhost:8787
+
+# To test reminder emails locally without sending real mail, run
+# `python3 scripts/mock-email.py /tmp/emails.jsonl 9999` and uncomment:
+# RESEND_API_KEY=test
+# EMAIL_API_URL=http://localhost:9999/emails

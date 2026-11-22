@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # End-to-end smoke test against a running `wrangler dev` (local D1, migrations applied).
 #   npm run db:migrate:local && npm run dev   # in another terminal
-#   SETUP_SECRET=... BASE=http://localhost:8787 scripts/smoke.sh
+#   npm run smoke            (reads SETUP_SECRET from .dev.vars; BASE defaults to http://localhost:8787)
 # Creates fresh groups on every run, so it is safe to repeat.
 set -u
 BASE=${BASE:-http://localhost:8787}
-SECRET=${SETUP_SECRET:-devsecret}
-FAILS=0
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# The setup secret: $SETUP_SECRET if set, else the one in .dev.vars (what `npm run dev` uses).
+SECRET=${SETUP_SECRET:-$(sed -n 's/^SETUP_SECRET=//p' "$ROOT/.dev.vars" 2>/dev/null)}
+[ -n "$SECRET" ] || { echo "Set SETUP_SECRET in .dev.vars (see .dev.vars.example)"; exit 2; }
+FAILS=0
 
 # req TOKEN METHOD PATH [JSON]  -> sets $BODY and $CODE
 req() {
@@ -30,7 +32,14 @@ add_member() { # adminToken name -> prints "id token"
   req "$1" POST /api/members "{\"name\":\"$2\",\"email\":\"$2@example.com\"}"
   echo "$(echo "$BODY" | jq -r .id) $(tok "$BODY")"
 }
-dow() { date -u -d "$1 +$2 day" +%F; }
+# Date helpers run in Node: macOS's BSD `date` has no -d, and Node is required anyway.
+# Dates are YYYY-MM-DD; "chicago" is the default group timezone (America/Chicago).
+add_days()     { node -e 'const [d,n]=process.argv.slice(1);const t=new Date(d+"T00:00:00Z");t.setUTCDate(t.getUTCDate()+Number(n));console.log(t.toISOString().slice(0,10))' "$1" "$2"; }
+days_between() { node -e 'const [a,b]=process.argv.slice(1);console.log(Math.round((Date.parse(b)-Date.parse(a))/864e5))' "$1" "$2"; }
+weekday_of()   { node -e 'console.log(new Date(process.argv[1]+"T00:00:00Z").getUTCDay())' "$1"; }
+long_date()    { node -e 'console.log(new Date(process.argv[1]+"T12:00:00Z").toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric",timeZone:"UTC"}))' "$1"; }
+chicago_date() { add_days "$(node -e 'console.log(new Intl.DateTimeFormat("en-CA",{timeZone:"America/Chicago"}).format(new Date()))')" "$1"; }  # today + N days
+dow() { add_days "$1" "$2"; }
 # Fire the hourly cron once (needs `wrangler dev --test-scheduled`).
 trigger() { curl -s -o /dev/null "$BASE/cdn-cgi/handler/scheduled?cron=0+*+*+*+*"; sleep 2; }
 # Read rows from the local D1 as colon-joined values, one row per line.
@@ -57,7 +66,7 @@ req "$ALEX" POST /api/dinners/schedule-next; D1=$(echo "$BODY" | jq -r .date); H
 req "$ALEX" POST /api/dinners/schedule-next; D2=$(echo "$BODY" | jq -r .date); H2=$(echo "$BODY" | jq -r .hostId); ID2=$(echo "$BODY" | jq -r .id)
 check "first turn is first member (Alex), not Bea" "$([ "$H1" != "$BEA_ID" ] && [ "$H1" != "$CAL_ID" ] && echo y)" y
 check "second turn is Bea" "$H2" "$BEA_ID"
-check "dinners are a week apart" "$(( ( $(date -u -d "$D2" +%s) - $(date -u -d "$D1" +%s) ) / 86400 ))" 7
+check "dinners are a week apart" "$(days_between "$D1" "$D2")" 7
 req "$CAL" POST "/api/dinners/$ID2/cancel";  check "non-host can't cancel" "$CODE" 403
 req "$BEA" POST "/api/dinners/$ID2/cancel" '{"reason":"flu"}'; check "host can cancel own dinner" "$CODE" 200
 req "$ALEX" POST /api/dinners/schedule-next; D3=$(echo "$BODY" | jq -r .date); ID3=$(echo "$BODY" | jq -r .id)
@@ -223,14 +232,14 @@ if [ -n "${MOCK_EMAIL_LOG:-}" ]; then
   subjects() { jq -r --arg to "$1" 'select(.to[0]==$to)|.subject' "$MOCK_EMAIL_LOG" | sort | tr '\n' '|'; }
   TOKR=$(curl -s -X POST "$BASE/admin/groups" -H "x-setup-secret: $SECRET" -H 'content-type: application/json' \
     -d "{\"name\":\"Reminders\",\"admin\":{\"name\":\"host$RUN\",\"email\":\"host$RUN@example.com\"}}" | jq -r '.adminLink | split("#t=")[1]')
-  TOMORROW_DOW=$(TZ=America/Chicago date -d tomorrow +%w)
+  TOMORROW_DOW=$(weekday_of "$(chicago_date 1)")
   req "$TOKR" PUT /api/group "{\"dinnerWeekday\":$TOMORROW_DOW,\"reminderHour\":0,\"rsvpDeadlineDays\":1}"
   req "$TOKR" PUT /api/me '{"dietary":"none","address":"9 Elm St"}'
   req "$TOKR" POST /api/members "{\"name\":\"yes$RUN\",\"email\":\"yes$RUN@example.com\"}"; YES_ID=$(echo "$BODY" | jq -r .id); YES=$(tok "$BODY")
   req "$TOKR" POST /api/members "{\"name\":\"quiet$RUN\",\"email\":\"quiet$RUN@example.com\"}"; QUIET_ID=$(echo "$BODY" | jq -r .id); QUIET=$(tok "$BODY")
   req "$YES" PUT /api/me '{"dietary":"none"}'
   req "$TOKR" POST /api/dinners/schedule-next; RD=$(echo "$BODY" | jq -r .id)
-  check "dinner lands on tomorrow (group timezone)" "$(echo "$BODY" | jq -r .date)" "$(TZ=America/Chicago date -d tomorrow +%F)"
+  check "dinner lands on tomorrow (group timezone)" "$(echo "$BODY" | jq -r .date)" "$(chicago_date 1)"
   req "$YES" PUT "/api/dinners/$RD/rsvp" '{"response":"yes"}'
   req "$YES" POST "/api/dinners/$RD/guests" "{\"name\":\"Pat\",\"email\":\"pat$RUN@example.com\"}"
   # "bounce" addresses make the mock return HTTP 500: a permanently failing recipient.
@@ -239,7 +248,7 @@ if [ -n "${MOCK_EMAIL_LOG:-}" ]; then
   req "$BOUNCE" PUT "/api/dinners/$RD/rsvp" '{"response":"yes"}'
   sleep 1
   check "new members get an invite email with their link" "$(jq -r --arg to "quiet$RUN@example.com" 'select(.to[0]==$to)|.text' "$MOCK_EMAIL_LOG" | grep -c '#t=')" 1
-  check "new host is told it's their turn" "$(subjects "host$RUN@example.com")" "You're hosting Reminders on $(date -u -d "$(TZ=America/Chicago date -d tomorrow +%F)" +'%A, %b %-d')|"
+  check "new host is told it's their turn" "$(subjects "host$RUN@example.com")" "You're hosting Reminders on $(long_date "$(chicago_date 1)")|"
   trigger
   check "host gets day-before reminder" "$(subjects "host$RUN@example.com" | grep -c "Tomorrow: dinner at host$RUN's")" 1
   check "'yes' member gets day-before reminder" "$(subjects "yes$RUN@example.com" | grep -c "Tomorrow: dinner at host$RUN's")" 1
@@ -257,9 +266,9 @@ if [ -n "${MOCK_EMAIL_LOG:-}" ]; then
     -d "{\"name\":\"Bounce host\",\"admin\":{\"name\":\"bh$RUN\",\"email\":\"bouncehost$RUN@example.com\"}}" | jq -r '.adminLink | split("#t=")[1]')
   # Put the dinner 4 days out so no day-based reminder (deadline 3 days, day-before, day-of) fires
   # for this failing host: otherwise its retries would depend on which weekday the test runs.
-  req "$BH" PUT /api/group "{\"dinnerWeekday\":$(( ( $(TZ=America/Chicago date +%w) + 4 ) % 7 ))}"
+  req "$BH" PUT /api/group "{\"dinnerWeekday\":$(( ( $(weekday_of "$(chicago_date 0)") + 4 ) % 7 ))}"
   req "$BH" POST /api/dinners/schedule-next; sleep 1
-  check "bounce-host dinner is 4 days out" "$(echo "$BODY" | jq -r .date)" "$(TZ=America/Chicago date -d '+4 days' +%F)"
+  check "bounce-host dinner is 4 days out" "$(echo "$BODY" | jq -r .date)" "$(chicago_date 4)"
   hosting_count() { jq -r --arg to "bouncehost$RUN@example.com" 'select(.to[0]==$to and (.subject|startswith("You'"'"'re hosting")))|.subject' "$MOCK_EMAIL_LOG" | wc -l | tr -d ' '; }
   check "host-assigned email fails at schedule time" "$(hosting_count)" 1
   trigger; trigger
