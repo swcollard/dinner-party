@@ -44,6 +44,8 @@ potluckRoutes.delete("/dinners/:id/dishes/:dishId", async (c) => {
   const me = c.get("member");
   const d = await findDinner(c.env.DB, c.req.param("id"), me.groupId);
   if (!d) return c.json({ error: "not found" }, 404);
+  const closed = closedReason(d, todayIn(me.timezone, new Date()));
+  if (closed) return c.json({ error: closed }, 409);
   const dish = await c.env.DB.prepare("SELECT id, member_id FROM dishes WHERE id = ? AND dinner_id = ?")
     .bind(c.req.param("dishId"), d.id)
     .first<{ id: string; member_id: string }>();

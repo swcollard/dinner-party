@@ -98,6 +98,10 @@ req "$BEA" GET /api/me; check "...and nothing was granted" "$(echo "$BODY" | jq 
 req "$BEA" PUT /api/group '{"chatUrl":"https://chat.whatsapp.com/abc"}'; check "manage_settings can still change other settings" "$CODE" 200
 req "$ALEX" PUT "/api/members/$ALEX_ID" '{"active":false}'
 check "can't deactivate the last admin" "$CODE" 409
+read ADM2_ID ADM2 < <(add_member "$ALEX" adm)
+req "$ALEX" PUT "/api/members/$ADM2_ID" '{"role":"admin"}'
+req "$ALEX" PUT "/api/members/$ADM2_ID" '{"active":false}'; check "a second admin can be deactivated" "$CODE" 200
+req "$ALEX" PUT "/api/members/$ADM2_ID" '{"role":"member"}'; check "demoting an already-inactive admin isn't blocked by the last-admin guard" "$CODE" 200
 req "$ALEX" PUT "/api/members/$CAL_ID" '{"active":false}'; check "can't deactivate a member who is hosting an upcoming dinner" "$CODE" 409
 check "...and the response says which dinners" "$(echo "$BODY" | jq -r '.error, (.dinners|length > 0)' | tr '\n' ' ')" "hosts_upcoming_dinners true "
 read TMP_ID TMP < <(add_member "$ALEX" tmp)
@@ -177,6 +181,8 @@ req "$CAL" POST "/api/members/$CAL_ID/link"; check "anyone can reissue their own
 
 echo "== past dinners are closed, then marked done"
 req "$ALEX" POST /api/dinners/schedule-next; PAST=$(echo "$BODY" | jq -r .id)
+req "$ALEX" PUT "/api/dinners/$PAST" '{"menuMode":"both"}'
+req "$BEA" POST "/api/dinners/$PAST/dishes" '{"description":"Pie"}'; PASTDISH=$(echo "$BODY" | jq -r .id)
 local_sql "UPDATE dinners SET date='2020-01-05' WHERE id='$PAST'"
 req "$ALEX" GET "/api/dinners/$PAST"; check "back-dated dinner is now in the past (test setup worked)" "$(echo "$BODY" | jq -r .date)" 2020-01-05
 check "address is hidden once the dinner has passed" "$(echo "$BODY" | jq '.address')" null
@@ -184,6 +190,7 @@ req "$BEA" PUT "/api/dinners/$PAST/rsvp" '{"response":"no"}';        check "can'
 check "...with a clear reason" "$(echo "$BODY" | jq -r .error)" "dinner is in the past"
 req "$BEA" POST "/api/dinners/$PAST/guests" '{"name":"Late"}';      check "can't add guests to a past dinner" "$CODE" 409
 req "$BEA" POST "/api/dinners/$PAST/dishes" '{"description":"x"}';  check "can't add dishes to a past dinner" "$CODE" 409
+req "$BEA" DELETE "/api/dinners/$PAST/dishes/$PASTDISH";            check "can't remove dishes from a past dinner" "$CODE" 409
 req "$ALEX" PUT "/api/dinners/$PAST" '{"menu":"late edit"}';        check "can't edit a past dinner" "$CODE" 409
 req "$ALEX" PUT "/api/dinners/$PAST/host" "{\"hostId\":\"$CAL_ID\"}"; check "can't change the host of a past dinner" "$CODE" 409
 req "$ALEX" POST "/api/dinners/$PAST/cancel";                       check "can't cancel a past dinner" "$CODE" 409
