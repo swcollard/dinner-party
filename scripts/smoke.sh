@@ -255,7 +255,11 @@ if [ -n "${MOCK_EMAIL_LOG:-}" ]; then
   check "...and its state shows it has been given up on" "$(local_query "SELECT status, attempts FROM notifications WHERE recipient='member:$BOUNCE_ID' AND kind='day_before'")" "failed:3"
   BH=$(curl -s -X POST "$BASE/admin/groups" -H "x-setup-secret: $SECRET" -H 'content-type: application/json' \
     -d "{\"name\":\"Bounce host\",\"admin\":{\"name\":\"bh$RUN\",\"email\":\"bouncehost$RUN@example.com\"}}" | jq -r '.adminLink | split("#t=")[1]')
+  # Put the dinner 4 days out so no day-based reminder (deadline 3 days, day-before, day-of) fires
+  # for this failing host: otherwise its retries would depend on which weekday the test runs.
+  req "$BH" PUT /api/group "{\"dinnerWeekday\":$(( ( $(TZ=America/Chicago date +%w) + 4 ) % 7 ))}"
   req "$BH" POST /api/dinners/schedule-next; sleep 1
+  check "bounce-host dinner is 4 days out" "$(echo "$BODY" | jq -r .date)" "$(TZ=America/Chicago date -d '+4 days' +%F)"
   hosting_count() { jq -r --arg to "bouncehost$RUN@example.com" 'select(.to[0]==$to and (.subject|startswith("You'"'"'re hosting")))|.subject' "$MOCK_EMAIL_LOG" | wc -l | tr -d ' '; }
   check "host-assigned email fails at schedule time" "$(hosting_count)" 1
   trigger; trigger
