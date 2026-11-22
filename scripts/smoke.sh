@@ -92,6 +92,10 @@ req "$BEA" POST /api/dinners/schedule-next; check "granted member can schedule" 
 req "$BEA" PUT "/api/members/$CAL_ID" '{"role":"admin"}'; check "non-admin can't promote" "$CODE" 403
 req "$ALEX" PUT /api/group '{"memberPermissions":["skip_weeks"]}'; check "group default grants" "$CODE" 200
 req "$CAL" POST /api/skips "{\"date\":\"$(dow "$D6" 70)\"}"; check "default grant applies to members" "$CODE" 201
+req "$ALEX" PUT "/api/members/$BEA_ID" '{"permissions":["schedule_dinners","manage_settings"]}'
+req "$BEA" PUT /api/group '{"memberPermissions":["manage_members","override_host"]}'; check "manage_settings alone can't change member permissions" "$CODE" 403
+req "$BEA" GET /api/me; check "...and nothing was granted" "$(echo "$BODY" | jq -c '.permissions|sort')" '["manage_settings","schedule_dinners","skip_weeks"]'
+req "$BEA" PUT /api/group '{"chatUrl":"https://chat.whatsapp.com/abc"}'; check "manage_settings can still change other settings" "$CODE" 200
 req "$ALEX" PUT "/api/members/$ALEX_ID" '{"active":false}'
 check "can't deactivate the last admin" "$CODE" 409
 req "$ALEX" PUT "/api/members/$CAL_ID" '{"active":false}'; check "can't deactivate a member who is hosting an upcoming dinner" "$CODE" 409

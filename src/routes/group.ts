@@ -16,7 +16,7 @@ const settings = z.object({
   defaultStartTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
   rsvpDeadlineDays: z.number().int().min(0).max(14).optional(),
   reminderHour: z.number().int().min(0).max(23).optional(),
-  // What every non-admin member may do, beyond the basics.
+  // What every non-admin member may do, beyond the basics. Admin-only (checked below).
   memberPermissions: z.array(z.enum(PERMISSIONS)).optional(),
 });
 
@@ -25,6 +25,12 @@ groupRoutes.put("/group", async (c) => {
   if (!can(me, "manage_settings")) return c.json({ error: "forbidden" }, 403);
   const body = settings.safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: body.error.issues }, 400);
+  // Default member grants change what everyone can do, so like per-member grants and
+  // roles they are admin-only. Otherwise a manage_settings delegate could grant
+  // themselves (and everyone) manage_members, override_host, etc.
+  if (body.data.memberPermissions !== undefined && me.role !== "admin") {
+    return c.json({ error: "only admins can change what members are allowed to do" }, 403);
+  }
 
   const stmt = updateStatement(
     c.env.DB,
