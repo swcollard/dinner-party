@@ -1,0 +1,8 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    // Tests run in Node (vitest) and use node:sqlite for the D1 stand-in.
+    "types": ["@cloudflare/workers-types", "node"]
+  },
+  "include": [".", "../src"]
+}

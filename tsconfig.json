@@ -10,5 +10,6 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "test"]
+  // Worker code only: Node globals must not be visible here. Tests use test/tsconfig.json.
+  "include": ["src"]
 }
