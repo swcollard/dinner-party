@@ -73,6 +73,19 @@ req "$ALEX" POST /api/dinners/schedule-next; D6=$(echo "$BODY" | jq -r .date)
 check "skipped week is passed over" "$D6" "$(dow "$D4" 14)"
 check "skip consumed no turn: back to Alex" "$(echo "$BODY" | jq -r .hostId)" "$H1"
 
+echo "== a cancelled turn is repaid even when later dinners are already scheduled"
+X=$(new_group "Owed" xan); req "$X" GET /api/me; X_ID=$(echo "$BODY" | jq -r .id)
+read Y_ID Y < <(add_member "$X" yev); read Z_ID Z < <(add_member "$X" zoe)
+req "$X" POST /api/dinners/schedule-next
+req "$X" POST /api/dinners/schedule-next; MID=$(echo "$BODY" | jq -r .id)
+req "$X" POST /api/dinners/schedule-next
+check "three dinners scheduled in order: xan, yev, zoe" "$(echo "$BODY" | jq -r .hostId)" "$Z_ID"
+req "$Y" POST "/api/dinners/$MID/cancel"
+req "$X" POST /api/dinners/schedule-next
+check "the next dinner repays yev's cancelled turn" "$(echo "$BODY" | jq -r '.hostId == $y and .makeupFor == $m' --arg y "$Y_ID" --arg m "$MID")" true
+req "$X" POST /api/dinners/schedule-next
+check "then the regular order resumes (xan), nobody skipped" "$(echo "$BODY" | jq -r .hostId)" "$X_ID"
+
 echo "== permissions"
 req "$ALEX" PUT "/api/members/$BEA_ID" '{"permissions":["schedule_dinners"]}'; check "admin grants a permission" "$CODE" 200
 req "$BEA" POST /api/dinners/schedule-next; check "granted member can schedule" "$CODE" 201

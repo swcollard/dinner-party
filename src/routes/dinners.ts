@@ -36,9 +36,15 @@ dinnerRoutes.post("/dinners/schedule-next", async (c) => {
     c.env.DB.prepare("SELECT id, rotation_position, active FROM members WHERE group_id = ?")
       .bind(me.groupId)
       .all<{ id: string; rotation_position: number; active: number }>(),
-    c.env.DB.prepare("SELECT date, status, rotation_host_id FROM dinners WHERE group_id = ?")
+    c.env.DB.prepare("SELECT id, date, status, rotation_host_id, makeup_for FROM dinners WHERE group_id = ?")
       .bind(me.groupId)
-      .all<{ date: string; status: "scheduled" | "cancelled" | "done"; rotation_host_id: string | null }>(),
+      .all<{
+        id: string;
+        date: string;
+        status: "scheduled" | "cancelled" | "done";
+        rotation_host_id: string | null;
+        makeup_for: string | null;
+      }>(),
     c.env.DB.prepare("SELECT date FROM skip_dates WHERE group_id = ?")
       .bind(me.groupId)
       .all<{ date: string }>(),
@@ -48,9 +54,11 @@ dinnerRoutes.post("/dinners/schedule-next", async (c) => {
   const plan = planNextDinner({
     members: members.results.map((m) => ({ id: m.id, position: m.rotation_position, active: !!m.active })),
     dinners: dinners.results.map((d) => ({
+      id: d.id,
       date: d.date,
       status: d.status,
       rotationHostId: d.rotation_host_id,
+      makeupFor: d.makeup_for,
     })),
     skips: new Set(skips.results.map((s) => s.date)),
     weekday: group.dinner_weekday,
@@ -61,20 +69,21 @@ dinnerRoutes.post("/dinners/schedule-next", async (c) => {
   const id = crypto.randomUUID();
   try {
     await c.env.DB.prepare(
-      `INSERT INTO dinners (id, group_id, host_id, rotation_host_id, date, start_time)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO dinners (id, group_id, host_id, rotation_host_id, makeup_for, date, start_time)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(id, me.groupId, plan.rotationHostId, plan.rotationHostId, plan.date, group.default_start_time)
+      .bind(id, me.groupId, plan.hostId, plan.hostId, plan.makeupFor, plan.date, group.default_start_time)
       .run();
   } catch (e) {
-    // Two organizers scheduling at once computed the same date; UNIQUE(group_id, date) let only one in.
+    // Two organizers scheduling at once computed the same date (or the same make-up);
+    // UNIQUE(group_id, date) / UNIQUE(makeup_for) let only one in.
     if (isUniqueViolation(e)) {
       return c.json({ error: "conflict", message: "Another dinner was just scheduled. Refresh and try again." }, 409);
     }
     throw e;
   }
   c.executionCtx.waitUntil(notifyHostAssigned(c.env, id));
-  return c.json({ id, hostId: plan.rotationHostId, date: plan.date }, 201);
+  return c.json({ id, hostId: plan.hostId, date: plan.date, makeupFor: plan.makeupFor }, 201);
 });
 
 export interface DinnerRow {
@@ -218,7 +227,7 @@ dinnerRoutes.put("/dinners/:id/host", async (c) => {
   return c.json({ ok: true, hostId: body.data.hostId, rotationHostId: d.rotation_host_id });
 });
 
-// Cancel a dinner. The host's turn carries over: the next scheduled dinner goes to them.
+// Cancel a dinner. The host's turn is owed: the next dinner scheduled goes to them as a make-up.
 dinnerRoutes.post("/dinners/:id/cancel", async (c) => {
   const me = c.get("member");
   const d = await findDinner(c.env.DB, c.req.param("id"), me.groupId);
