@@ -88,7 +88,14 @@ async function render() {
     if (!me.profileComplete) parts.push(profilePrompt(render));
     parts.push(el("h2", { textContent: "Upcoming" }));
     if (dinners.length === 0) parts.push(el("p", { className: "muted", textContent: "Nothing scheduled yet." }));
-    dinners.slice(0, 6).forEach((d, i) => { const c = dinnerCard(d); if (i === 0) c.classList.add("next"); parts.push(c); });
+    // "Next" is the first dinner that is still on; a cancelled one at the top of the list isn't it.
+    const next = dinners.find((d) => d.status === "scheduled");
+    dinners.slice(0, 6).forEach((d) => {
+      const c = dinnerCard(d);
+      if (d === next) c.classList.add("next");
+      if (d.status === "cancelled") c.classList.add("cancelled");
+      parts.push(c);
+    });
     if (me.group.chatUrl) parts.push(el("p", {}, el("a", { href: me.group.chatUrl, rel: "noopener", textContent: "Open group chat" })));
     app.replaceChildren(...parts);
   } catch (e) {

@@ -14,6 +14,8 @@ h2 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em; color: v
 header p { margin: 2px 0 0; color: var(--muted); }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin: 0 0 12px; }
 .card.next { border-color: var(--accent); }
+.card.cancelled { opacity: .6; }
+.card.cancelled h3 { text-decoration: line-through; }
 .card h3 { margin: 0 0 2px; font-size: 1.05rem; }
 .muted { color: var(--muted); font-size: .9rem; }
 .row { display: flex; gap: 8px; margin-top: 12px; }
