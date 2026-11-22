@@ -116,14 +116,15 @@ memberRoutes.put("/members/:id", async (c) => {
     return c.json({ error: "only admins can change roles and permissions" }, 403);
   }
 
-  const target = await c.env.DB.prepare("SELECT role FROM members WHERE id = ? AND group_id = ?")
+  const target = await c.env.DB.prepare("SELECT role, active FROM members WHERE id = ? AND group_id = ?")
     .bind(c.req.param("id"), me.groupId)
-    .first<{ role: "admin" | "member" }>();
+    .first<{ role: "admin" | "member"; active: number }>();
   if (!target) return c.json({ error: "not found" }, 404);
   if (target.role === "admin" && me.role !== "admin") return c.json({ error: "only admins can modify admins" }, 403);
 
-  // Never leave a group without an active admin.
-  if (target.role === "admin" && (patch.role === "member" || patch.active === false)) {
+  // Never leave a group without an active admin. Only changes to an admin who is currently
+  // active can reduce that count; demoting an already-inactive admin can't.
+  if (target.role === "admin" && target.active === 1 && (patch.role === "member" || patch.active === false)) {
     const row = await c.env.DB.prepare(
       "SELECT COUNT(*) AS n FROM members WHERE group_id = ? AND role = 'admin' AND active = 1",
     )
