@@ -21,9 +21,10 @@
     { "binding": "DB", "database_name": "dinner-party-local", "database_id": "local", "migrations_dir": "migrations" }
   ],
   "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "dinner-party-backups-local" }],
-  // Hourly: reminders (each group's own reminder hour/timezone decides what is due).
+  // Every 15 minutes: reminders + closing past dinners (each group's reminder hour/timezone decides
+  // what is due; frequent runs let a large batch drain within the per-run send budget).
   // Weekly Sunday 09:00 UTC: database backup to R2 (must equal BACKUP_CRON in src/backup.ts).
-  "triggers": { "crons": ["0 * * * *", "0 9 * * 0"] },
+  "triggers": { "crons": ["*/15 * * * *", "0 9 * * 0"] },
   "vars": { "PUBLIC_BASE_URL": "http://localhost:8787" },
 
   // Secrets are per environment: wrangler secret put SETUP_SECRET --env <name>
@@ -41,7 +42,7 @@
         }
       ],
       "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "dinner-party-backups-staging" }],
-      "triggers": { "crons": ["0 * * * *", "0 9 * * 0"] },
+      "triggers": { "crons": ["*/15 * * * *", "0 9 * * 0"] },
       "vars": { "PUBLIC_BASE_URL": "https://dinner-party-staging.example.workers.dev" }
     },
     "production": {
@@ -56,7 +57,7 @@
         }
       ],
       "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "dinner-party-backups" }],
-      "triggers": { "crons": ["0 * * * *", "0 9 * * 0"] },
+      "triggers": { "crons": ["*/15 * * * *", "0 9 * * 0"] },
       // Replace with the custom domain once attached to the Worker.
       "vars": { "PUBLIC_BASE_URL": "https://dinner-party.example.com" }
     }

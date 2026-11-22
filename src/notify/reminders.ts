@@ -1,8 +1,8 @@
 import type { Env } from "../env";
 import { hourIn, todayIn } from "../lib/time";
-import { deliver, getNotifiers } from "./index";
+import { deliver, getNotifiers, MAX_ATTEMPTS, sendBudget, STALE_PENDING, type SendBudget } from "./index";
 import { buildMessage, dueReminders, type DinnerContext } from "./messages";
-import type { Recipient, ReminderKind } from "./types";
+import type { Notifier, Recipient, ReminderKind } from "./types";
 
 interface DinnerRow {
   id: string;
@@ -55,10 +55,17 @@ const context = (d: DinnerRow, env: Env, withAddress: boolean): DinnerContext =>
   appUrl: env.PUBLIC_BASE_URL,
 });
 
-/** Tell a member it's their turn to host. Called when a dinner is scheduled or the host is overridden. */
-export async function notifyHostAssigned(env: Env, dinnerId: string): Promise<void> {
+/**
+ * Tell a member it's their turn to host. Called when a dinner is scheduled or the host is
+ * overridden, and again by the cron to retry a failed or abandoned attempt.
+ */
+export async function notifyHostAssigned(
+  env: Env,
+  dinnerId: string,
+  notifiers: Notifier[] = getNotifiers(env),
+  budget?: SendBudget,
+): Promise<void> {
   try {
-    const notifiers = getNotifiers(env);
     if (notifiers.length === 0) return;
     const d = await env.DB.prepare(`${DINNER_SQL} WHERE d.id = ?`).bind(dinnerId).first<DinnerRow>();
     if (!d) return;
@@ -68,7 +75,15 @@ export async function notifyHostAssigned(env: Env, dinnerId: string): Promise<vo
       .bind(d.host_id)
       .first<MemberRow>();
     if (!host) return;
-    await deliver(env, notifiers, d.id, "host_assigned", memberRecipient(host), buildMessage("host_assigned", host.name, context(d, env, false)));
+    await deliver(
+      env,
+      notifiers,
+      d.id,
+      "host_assigned",
+      memberRecipient(host),
+      buildMessage("host_assigned", host.name, context(d, env, false)),
+      budget,
+    );
   } catch (e) {
     console.error("notifyHostAssigned failed", e);
   }
@@ -112,13 +127,31 @@ export async function sendNewLink(env: Env, member: Recipient, groupName: string
 }
 
 /**
- * Hourly cron. For every upcoming dinner, if it is past the group's reminder
- * hour in the group's own timezone, send whichever reminders are due today.
- * `deliver` de-duplicates, so running every hour (or retrying) is safe.
+ * Cron (every 15 minutes). Retries host-assigned emails that failed or were abandoned,
+ * then, for every upcoming dinner past its group's reminder hour (in the group's own
+ * timezone), sends whichever reminders are due today. `deliver` de-duplicates, so
+ * frequent runs are safe, and the send budget keeps each run under the subrequest limit.
  */
-export async function runReminders(env: Env, now: Date): Promise<void> {
-  const notifiers = getNotifiers(env);
+export async function runReminders(env: Env, now: Date, notifiers: Notifier[] = getNotifiers(env)): Promise<void> {
   if (notifiers.length === 0) return;
+  const budget = sendBudget(env);
+
+  // host_assigned is sent at request time, not by this loop, so retries happen here. Only the
+  // dinner's current host counts: a failure for someone since replaced by an override is moot.
+  const { results: retries } = await env.DB.prepare(
+    `SELECT n.dinner_id FROM notifications n
+     JOIN dinners d ON d.id = n.dinner_id
+     WHERE n.kind = 'host_assigned' AND n.recipient = 'member:' || d.host_id
+       AND d.status = 'scheduled' AND d.date >= date('now', '-1 day')
+       AND n.attempts < ?
+       AND (n.status = 'failed' OR (n.status = 'pending' AND n.updated_at < datetime('now', ?)))`,
+  )
+    .bind(MAX_ATTEMPTS, STALE_PENDING)
+    .all<{ dinner_id: string }>();
+  for (const r of retries) {
+    if (budget.remaining <= 0) return;
+    await notifyHostAssigned(env, r.dinner_id, notifiers, budget);
+  }
 
   const { results: dinners } = await env.DB.prepare(
     `${DINNER_SQL}
@@ -126,6 +159,7 @@ export async function runReminders(env: Env, now: Date): Promise<void> {
   ).all<DinnerRow>();
 
   for (const d of dinners) {
+    if (budget.remaining <= 0) return; // the rest goes out on the next run
     if (hourIn(d.timezone, now) < d.reminder_hour) continue;
     const kinds = dueReminders(d.date, todayIn(d.timezone, now), d.rsvp_deadline_days);
     if (kinds.length === 0) continue;
@@ -149,7 +183,7 @@ export async function runReminders(env: Env, now: Date): Promise<void> {
       const targets = recipientsFor(kind, d, members.results, response, guests.results);
       const withAddress = kind === "day_before" || kind === "day_of";
       for (const r of targets) {
-        await deliver(env, notifiers, d.id, kind, r, buildMessage(kind, r.name, context(d, env, withAddress)));
+        await deliver(env, notifiers, d.id, kind, r, buildMessage(kind, r.name, context(d, env, withAddress)), budget);
       }
     }
   }

@@ -20,7 +20,22 @@ export function getNotifiers(env: Env): Notifier[] {
 /** Give up on a (dinner, kind, recipient, channel) after this many failed or abandoned attempts. */
 export const MAX_ATTEMPTS = 3;
 /** A claim still 'pending' after this long means the worker died mid-send; it may be claimed again. */
-const STALE_PENDING = "-10 minutes";
+export const STALE_PENDING = "-10 minutes";
+
+/**
+ * How many sends one invocation may still attempt. Workers cap subrequests per invocation,
+ * so a big batch of reminders must be spread over several cron runs; whatever is left
+ * unsent (never claimed) is simply picked up next time.
+ */
+export interface SendBudget {
+  remaining: number;
+}
+export const DEFAULT_SEND_BUDGET = 40;
+
+export function sendBudget(env: Env): SendBudget {
+  const n = Number.parseInt(env.REMINDER_SEND_BUDGET ?? "", 10);
+  return { remaining: Number.isFinite(n) && n > 0 ? n : DEFAULT_SEND_BUDGET };
+}
 
 /**
  * Send `message` to `recipient` on each channel they opted into, at most once per
@@ -33,6 +48,7 @@ const STALE_PENDING = "-10 minutes";
  *  - If the worker dies mid-send the row stays 'pending'; after STALE_PENDING it is
  *    claimed again so the reminder isn't lost. This is at-least-once: in that rare case
  *    a reminder whose email did go out may be sent a second time, which beats silence.
+ *  - With a `budget`, stops (without claiming) once the budget is spent.
  */
 export async function deliver(
   env: Env,
@@ -41,9 +57,12 @@ export async function deliver(
   kind: ReminderKind,
   recipient: Recipient,
   message: Message,
+  budget?: SendBudget,
 ): Promise<void> {
   for (const n of notifiers) {
     if (!recipient.channels.includes(n.channel) || !n.canReach(recipient)) continue;
+    // Out of budget: don't claim, so the next run sends it instead of seeing a stuck 'pending'.
+    if (budget && budget.remaining <= 0) return;
     const key = [dinnerId, kind, recipient.key, n.channel] as const;
 
     const claim = await env.DB.prepare(
@@ -57,6 +76,7 @@ export async function deliver(
       .bind(...key, MAX_ATTEMPTS, STALE_PENDING)
       .run();
     if (!claim.meta.changes) continue; // already sent, in flight, or out of attempts
+    if (budget) budget.remaining--;
 
     try {
       await n.send(recipient, message);

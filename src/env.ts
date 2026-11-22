@@ -13,6 +13,12 @@ export interface Env {
   EMAIL_FROM?: string;
   /** Override the email API endpoint (used to point tests at a local mock). */
   EMAIL_API_URL?: string;
+  /**
+   * Max reminder sends per cron run (default 40). Each send is one outbound fetch plus a few D1
+   * queries; keep this under your Workers plan's per-invocation subrequest limit. Anything over
+   * budget is picked up by the next run (every 15 minutes).
+   */
+  REMINDER_SEND_BUDGET?: string;
 }
 
 export interface AuthedMember {

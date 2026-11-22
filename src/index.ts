@@ -39,7 +39,7 @@ app.route("/api", api);
 
 export default {
   fetch: app.fetch,
-  // Two crons (see wrangler.jsonc): hourly reminders + closing past dinners, weekly backup.
+  // Two crons (see wrangler.jsonc): every 15 minutes reminders + closing past dinners, weekly backup.
   scheduled: (event: ScheduledController, env: AppBindings["Bindings"], ctx: ExecutionContext) => {
     const now = new Date();
     if (event.cron === BACKUP_CRON) {
