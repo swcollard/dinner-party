@@ -25,33 +25,61 @@ menus or potluck sign-up; reminders; and a calendar feed. Mobile-first PWA, no a
   read-only immediately, not only after the job runs.
 - **Backups**: weekly cron exports every table to R2 (`src/backup.ts`), without live calendar tokens.
 
-## Develop
+## Run it locally
+
+Needs Node 22 or newer (the unit tests use Node's built-in `node:sqlite`). The scripts also use `bash`, `curl`,
+`jq` and `python3` (macOS: `brew install jq`). Wrangler runs D1 and R2 locally, so no Cloudflare account is needed.
 
 ```sh
-npm install
-cp .dev.vars.example .dev.vars     # set SETUP_SECRET
-npm run db:migrate:local
-npm run dev                        # http://localhost:8787
-npm test && npm run typecheck     # typecheck covers src (Workers types only) and test/ (adds Node)
+npm ci
+cp .dev.vars.example .dev.vars     # optionally change SETUP_SECRET
+npm run db:migrate:local           # confirm if prompted
+npm run dev                        # http://localhost:8787, leave running
 ```
 
-Create a group (prints the admin's personal link):
+In a second terminal:
 
 ```sh
-curl -X POST localhost:8787/admin/groups -H "x-setup-secret: $SETUP_SECRET" -H 'content-type: application/json' \
+npm run seed                       # demo group: prints a personal link for Alex (admin), Bea, Cal and Dee
+```
+
+Open the links in different browsers or private windows to act as different people. Bea, Cal and Dee haven't
+filled in dietary info, so the app asks for it before they can RSVP. Phone-sized: use your browser's device mode.
+
+### Tests
+
+```sh
+npm run typecheck && npm test      # 54 unit tests; src is checked with Workers types only
+npm run smoke                      # end-to-end against the running dev server (reads SETUP_SECRET from .dev.vars)
+```
+
+`scripts/smoke.sh` drives the real API against local D1 and asserts rotation, permissions, privacy, calendar,
+past dinners, concurrency and cross-group isolation. To also test reminders, use the mock email server, which
+logs instead of sending (and returns 500 for any address containing "bounce", to test retries):
+
+```sh
+python3 scripts/mock-email.py /tmp/emails.jsonl 9999           # third terminal
+# uncomment RESEND_API_KEY and EMAIL_API_URL in .dev.vars, then restart `npm run dev`
+MOCK_EMAIL_LOG=/tmp/emails.jsonl npm run smoke
+```
+
+### Useful while poking around
+
+```sh
+# run the crons now (npm run dev enables this)
+curl "http://localhost:8787/cdn-cgi/handler/scheduled?cron=*/15+*+*+*+*"   # reminders + close past dinners
+curl "http://localhost:8787/cdn-cgi/handler/scheduled?cron=0+9+*+*+0"      # weekly backup to local R2
+# look at the local database
+npx wrangler d1 execute DB --local --command "SELECT name, role, rotation_position FROM members"
+# start over with an empty database (stop npm run dev first)
+rm -rf .wrangler/state && npm run db:migrate:local
+```
+
+Create a group by hand (prints the admin's personal link):
+
+```sh
+curl -X POST localhost:8787/admin/groups -H "x-setup-secret: <SETUP_SECRET from .dev.vars>" -H 'content-type: application/json' \
   -d '{"name":"Sunday Supper","admin":{"name":"Alex","email":"alex@example.com"}}'
-```
-
-### End-to-end smoke test
-
-`scripts/smoke.sh` drives the real API against `wrangler dev` (local D1) and asserts rotation, permissions, privacy,
-calendar and cross-group isolation. To include reminders, run the mock email server and point the Worker at it:
-
-```sh
-scripts/mock-email.py /tmp/emails.jsonl 9999 &
-# .dev.vars: RESEND_API_KEY=test   EMAIL_API_URL=http://localhost:9999/emails
-npm run dev                                                    # in another terminal
-MOCK_EMAIL_LOG=/tmp/emails.jsonl SETUP_SECRET=... npm run smoke
 ```
 
 ## API (all under `/api` need `Authorization: Bearer <token>`)
