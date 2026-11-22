@@ -5,6 +5,17 @@ export const BACKUP_CRON = "0 9 * * 0";
 
 const PAGE_SIZE = 1000;
 
+/**
+ * Columns never written to backups because they are live secrets. A calendar token is a
+ * bearer credential for a feed that includes host addresses, so anyone with read access to
+ * the bucket could use it. (Access tokens are already stored only as hashes.) After a restore,
+ * mint fresh ones; members re-subscribe from the calendar URL in the app:
+ *   UPDATE members SET calendar_token = lower(hex(randomblob(32)));
+ */
+export const REDACTED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  members: ["calendar_token"],
+};
+
 const quote = (ident: string) => `"${ident.replaceAll('"', '""')}"`;
 
 /**
@@ -36,7 +47,11 @@ export async function runBackup(env: Env, now: Date): Promise<{ day: string; tab
       const { results } = await env.DB.prepare(
         `SELECT * FROM ${quote(name)} ORDER BY rowid LIMIT ${PAGE_SIZE} OFFSET ${offset}`,
       ).all();
-      for (const row of results) lines.push(JSON.stringify(row));
+      const redact = REDACTED_COLUMNS[name] ?? [];
+      for (const row of results) {
+        for (const col of redact) if (col in row) (row as Record<string, unknown>)[col] = null;
+        lines.push(JSON.stringify(row));
+      }
       if (results.length < PAGE_SIZE) break;
     }
     await env.BACKUPS.put(`${prefix}/${name}.ndjson`, lines.map((l) => `${l}\n`).join(""), {
@@ -52,7 +67,7 @@ export async function runBackup(env: Env, now: Date): Promise<{ day: string; tab
 
   await env.BACKUPS.put(
     `${prefix}/manifest.json`,
-    JSON.stringify({ createdAt: now.toISOString(), tables: counts }, null, 2),
+    JSON.stringify({ createdAt: now.toISOString(), tables: counts, redacted: REDACTED_COLUMNS }, null, 2),
     { httpMetadata: { contentType: "application/json" } },
   );
   return { day, tables: counts };
