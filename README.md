@@ -9,18 +9,21 @@ menus or potluck sign-up; reminders; and a calendar feed. Mobile-first PWA, no a
 
 ## How it works
 
-- **Rotation** (`src/lib/rotation.ts`): members have a fixed order. A cancelled dinner's turn carries to
-  the next dinner; overriding a host for one dinner never shifts anyone's turn; skipped weeks consume no turn.
+- **Rotation** (`src/lib/rotation.ts`): members have a fixed order. A cancelled turn is owed: the next dinner scheduled
+  goes to that host as a make-up (even if later dinners were already on the calendar, and without bumping anyone), then the
+  order resumes; overriding a host for one dinner never shifts anyone's turn; skipped weeks consume no turn.
 - **No accounts**: each member has a secret personal link (`https://app/#t=<token>`). Only a SHA-256 hash is stored;
   links can be reissued/revoked. Google sign-in can be layered on later.
 - **Multi-group**: every table carries `group_id` and every query is scoped to the caller's group.
 - **Permissions** (`src/lib/permissions.ts`): admins can do everything; a group sets default grants for members and
-  admins can grant more per person. Hosts can always manage their own dinner.
+  admins can grant more per person (both admin-only). Hosts can always manage their own dinner.
 - **Notifications** (`src/notify/`): channel-agnostic `Notifier` interface; email (Resend) is implemented. Reminders:
-  host assigned, RSVP deadline, day-before, day-of. Delivery state is tracked per recipient: no double-sends, failures are
-  retried up to 3 times then given up on (logged), and a send abandoned by a dead worker is picked up again.
-- **Hourly cron**: sends due reminders and marks past dinners `done`. Past dinners are read-only immediately, not only after the job runs.
-- **Backups**: weekly cron exports every table to R2 (`src/backup.ts`).
+  host assigned, RSVP deadline, day-before, day-of. Delivery state is tracked per recipient: no double-sends, failures
+  (host-assigned included) are retried up to 3 times then given up on (logged), and a send abandoned by a dead worker is picked up again.
+- **Cron every 15 minutes**: sends due reminders and marks past dinners `done`. Each run sends at most `REMINDER_SEND_BUDGET`
+  (default 40) to stay under the Workers per-invocation subrequest limit; the rest go out on the next run. Past dinners are
+  read-only immediately, not only after the job runs.
+- **Backups**: weekly cron exports every table to R2 (`src/backup.ts`), without live calendar tokens.
 
 ## Develop
 
@@ -29,7 +32,7 @@ npm install
 cp .dev.vars.example .dev.vars     # set SETUP_SECRET
 npm run db:migrate:local
 npm run dev                        # http://localhost:8787
-npm test && npm run typecheck
+npm test && npm run typecheck     # typecheck covers src (Workers types only) and test/ (adds Node)
 ```
 
 Create a group (prints the admin's personal link):
@@ -58,7 +61,7 @@ MOCK_EMAIL_LOG=/tmp/emails.jsonl SETUP_SECRET=... npm run smoke
 | `GET/PUT /api/me` | any member (profile, dietary info, address, notification channels) |
 | `GET /api/members`, `POST /api/members`, `PUT /api/members/order`, `PUT /api/members/:id` | `manage_members` (role/permission changes: admin only; a member hosting an upcoming dinner can't be deactivated) |
 | `POST /api/members/:id/link` | own link: anyone, link returned. Others': admins get the link back; `manage_members` delegates trigger an email to the member and never see it. Also rotates the member's calendar URL |
-| `PUT /api/group` | `manage_settings` |
+| `PUT /api/group` | `manage_settings` (default member permissions: admin only) |
 | `GET /api/dinners`, `GET /api/dinners/:id` | any member (dietary needs only for host/editors) |
 | `POST /api/dinners/schedule-next` | `schedule_dinners` |
 | `PUT /api/dinners/:id` (menu, notes, time, menu style) | host or `edit_any_dinner` |
@@ -91,5 +94,10 @@ dry-run bundle for every environment.
 
 **Backups**: D1 Time Travel covers 30 days of point-in-time restore. The weekly R2 export (`backups/YYYY-MM-DD/`) is the portable
 long-term copy; add an R2 lifecycle rule to expire old ones. A backup is complete only if its `manifest.json` exists.
+Calendar tokens are left out of backups (they are live credentials); after restoring, mint new ones with
+`UPDATE members SET calendar_token = lower(hex(randomblob(32)));` and members re-subscribe from the app.
+
+**Subrequest limit**: set `REMINDER_SEND_BUDGET` to fit your plan. Each reminder is one outbound fetch plus a few D1 queries.
+The default of 40 is deliberately conservative; check Cloudflare's current Workers limits for your plan before raising it.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for decisions, assumptions and open questions.
