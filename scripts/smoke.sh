@@ -260,9 +260,12 @@ if [ -n "${MOCK_EMAIL_LOG:-}" ]; then
   check "host-assigned email fails at schedule time" "$(hosting_count)" 1
   trigger; trigger
   check "...and the cron retries it, up to 3 attempts in all" "$(hosting_count)" 3
-  BEFORE=$(wc -l < "$MOCK_EMAIL_LOG")
+  # Count only this run's recipients: the cron also (correctly) retries failed sends left by
+  # earlier runs against the same local database, which would otherwise show up here.
+  ours() { grep -c "$RUN@example.com" "$MOCK_EMAIL_LOG"; }
+  BEFORE=$(ours)
   trigger
-  check "re-running the cron sends nothing twice" "$(( $(wc -l < "$MOCK_EMAIL_LOG") - BEFORE ))" 0
+  check "re-running the cron sends nothing twice" "$(( $(ours) - BEFORE ))" 0
 
   YES_ROW="recipient='member:$YES_ID' AND kind='day_before'"
   local_sql "UPDATE notifications SET status='pending', attempts=1, updated_at=datetime('now') WHERE $YES_ROW"
