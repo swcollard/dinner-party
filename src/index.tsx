@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { loadActor } from "./auth/session";
 import { access } from "./routes/access";
+import { calendar } from "./routes/calendar";
 import { dinners } from "./routes/dinners";
 import { neutral, sameOriginPosts, securityHeaders } from "./routes/http";
 import { members } from "./routes/members";
@@ -16,6 +17,7 @@ app.route("/members", members);
 app.route("/", dinners);
 app.route("/", rsvp);
 app.route("/", profile);
+app.route("/", calendar);
 app.notFound(neutral);
 
 export default app;

@@ -14,6 +14,7 @@ import {
 import { getSettings, listMembers } from "../db/people";
 import { needsForDinner } from "../db/diet";
 import { findOwnInvitation, listAttendees } from "../db/rsvps";
+import { googleCalendarUrl } from "../domain/calendar";
 import { normalizePhone, smsUri, whatsappUri } from "../domain/messages";
 import { assignSeats } from "../domain/seats";
 import { formatDateTime, isPast, localToUtc, utcToLocal } from "../domain/time";
@@ -21,6 +22,7 @@ import type { AppEnv, Dinner } from "../types";
 import { DietSummary } from "../views/diet";
 import { Field, Layout } from "../views/layout";
 import { RsvpPanel, WhosComing } from "../views/rsvp";
+import { calendarEvent } from "./calendar";
 import { absoluteUrl, neutral, problem, readForm } from "./http";
 import { loadDinner } from "./load";
 
@@ -216,6 +218,7 @@ dinners.get("/d/:id", async (c) => {
     needs: a.person_id === null ? a.diet : (needs.get(a.person_id) ?? []),
     waitlisted: waitlist.includes(a),
   }));
+  const event = calendarEvent(c, dinner);
   const open = dinner.status === "confirmed" && !dinner.rsvp_closed && can(actor, "rsvp.own", dinner);
   return c.html(
     <Layout title={dinner.title} actor={actor} forgetPath={`${path}/forget`}>
@@ -233,6 +236,12 @@ dinners.get("/d/:id", async (c) => {
       {dinner.note && <p class="note">{dinner.note}</p>}
       {invitation && !dinner.past && (
         <RsvpPanel {...{ path, invitation, open, seated, waitlist }} person={actor.person} hosting={dinner.host_id === actor.person.id} />
+      )}
+      {event && !dinner.past && (
+        <div class="actions">
+          <a class="button secondary" href={`${path}/calendar.ics`}>Add to calendar</a>
+          <a class="button secondary" href={googleCalendarUrl(event)}>Google Calendar</a>
+        </div>
       )}
       <WhosComing {...{ seated, waitlist, invitees }} capacity={dinner.capacity} />
       <DietSummary attendees={withNeeds} showNames={actor.person.kind === "member"} />
@@ -291,7 +300,7 @@ dinners.get("/d/:id/send", async (c) => {
         <a class="button" href={whatsappUri(groupMessage)}>WhatsApp</a>
         {groupPhones.length > 0 && (
           <a class="button" href={smsUri(groupPhones, groupMessage, c.req.header("User-Agent"))}>
-            Text {groupPhones.length} people
+            Text {groupPhones.length === 1 ? "1 person" : `${groupPhones.length} people`}
           </a>
         )}
         <button type="button" class="secondary" data-copy={groupMessage} hidden>Copy</button>
