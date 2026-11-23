@@ -37,3 +37,5 @@ details form { margin: 0.5rem 0; }
 .rows { padding: 0; list-style: none; }
 .rows li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; }
 section { margin: 1.5rem 0; }
+.check { display: flex; align-items: center; gap: 0.5rem; min-height: 44px; }
+.check input { width: 1.5rem; min-height: 1.5rem; height: 1.5rem; margin: 0; flex: none; }

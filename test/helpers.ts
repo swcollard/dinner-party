@@ -56,7 +56,7 @@ export async function seed() {
   const bo = new Browser();
   await ana.get(anaLink!);
   await bo.get(boLink!);
-  const created = await ana.post("/new", { title: "Soup night", startsAt: "2099-02-07T18:30", location: "Ana's", note: "" });
+  const created = await ana.post("/new", { title: "Soup night", startsAt: "2099-02-07T18:30", location: "Ana's", note: "", capacity: "" });
   return { sam, ana, bo, anaLink: anaLink!, boLink: boLink!, samLink: samLink!, dinner: created.headers.get("Location")! };
 }
 

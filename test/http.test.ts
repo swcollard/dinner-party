@@ -83,7 +83,7 @@ describe("personal links", () => {
 describe("one-dinner links", () => {
   it("open that dinner only, as that person", async () => {
     const { ana, dinner } = await seed();
-    const other = (await ana.post("/new", { title: "Tacos", startsAt: "2099-03-07T18:30", location: "", note: "" })).headers.get("Location")!;
+    const other = (await ana.post("/new", { title: "Tacos", startsAt: "2099-03-07T18:30", location: "", note: "", capacity: "" })).headers.get("Location")!;
     const browser = new Browser();
     expect((await browser.get((await links(ana, `${dinner}/send`, "i"))[0]!)).headers.get("Location")).toBe(dinner);
     expect((await browser.get(dinner)).body).toContain("You&#39;re Bo");
@@ -93,7 +93,7 @@ describe("one-dinner links", () => {
   });
   it("cannot be replayed as a cookie for another dinner", async () => {
     const { ana, dinner } = await seed();
-    const other = (await ana.post("/new", { title: "Tacos", startsAt: "2099-03-07T18:30", location: "", note: "" })).headers.get("Location")!;
+    const other = (await ana.post("/new", { title: "Tacos", startsAt: "2099-03-07T18:30", location: "", note: "", capacity: "" })).headers.get("Location")!;
     const token = (await links(ana, `${dinner}/send`, "i"))[0]!.split("/i/")[1]!;
     const response = await SELF.fetch(BASE + other, { headers: { Cookie: `dc_dinner=${token}` } });
     expect(response.status).toBe(404);

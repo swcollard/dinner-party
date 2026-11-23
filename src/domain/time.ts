@@ -36,6 +36,11 @@ export function localToUtc(local: string, timeZone: string): number | null {
   return naive - offsetAt(guess, timeZone);
 }
 
+/** The reverse of localToUtc, for filling in a datetime-local field. */
+export function utcToLocal(utc: number, timeZone: string): string {
+  return new Date(utc + offsetAt(utc, timeZone)).toISOString().slice(0, 16);
+}
+
 export function localDay(utc: number, timeZone: string): string {
   return new Date(utc + offsetAt(utc, timeZone)).toISOString().slice(0, 10);
 }

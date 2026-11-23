@@ -20,21 +20,49 @@ export async function listDinners(db: D1Database): Promise<(Dinner & { host_name
   return results;
 }
 
+export interface DinnerInput {
+  title: string;
+  startsAt: number;
+  location: string;
+  note: string;
+  capacity: number | null;
+}
+
+export async function updateDinner(
+  db: D1Database,
+  id: number,
+  input: DinnerInput & { rsvpClosed: boolean },
+): Promise<void> {
+  await db
+    .prepare(
+      "UPDATE dinners SET title = ?, starts_at = ?, location = ?, note = ?, capacity = ?, rsvp_closed = ? WHERE id = ?",
+    )
+    .bind(input.title, input.startsAt, input.location, input.note, input.capacity, input.rsvpClosed ? 1 : 0, id)
+    .run();
+}
+
+export async function setCancelled(db: D1Database, id: number, cancelled: boolean): Promise<void> {
+  await db
+    .prepare("UPDATE dinners SET status = ?1 WHERE id = ?2 AND status = ?3")
+    .bind(cancelled ? "cancelled" : "confirmed", id, cancelled ? "confirmed" : "cancelled")
+    .run();
+}
+
 /** Creates a confirmed dinner, invites every current member, and seats the host. */
 export async function createDinner(
   db: D1Database,
   hostId: number,
   memberIds: number[],
-  input: { title: string; startsAt: number; location: string; note: string },
+  input: DinnerInput,
 ): Promise<string> {
   const publicId = randomId();
   const now = Date.now();
   await db.batch([
     db
       .prepare(
-        "INSERT INTO dinners (public_id, host_id, title, starts_at, location, note, status) VALUES (?, ?, ?, ?, ?, ?, 'confirmed')",
+        "INSERT INTO dinners (public_id, host_id, title, starts_at, location, note, capacity, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'confirmed')",
       )
-      .bind(publicId, hostId, input.title, input.startsAt, input.location, input.note),
+      .bind(publicId, hostId, input.title, input.startsAt, input.location, input.note, input.capacity),
     ...memberIds.map((id) =>
       db
         .prepare(
