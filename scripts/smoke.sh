@@ -235,6 +235,14 @@ req "$OTHER" GET /api/dinners;                   check "other group sees no dinn
 #   MOCK_EMAIL_LOG=/tmp/emails.jsonl scripts/smoke.sh
 if [ -n "${MOCK_EMAIL_LOG:-}" ]; then
   echo "== notifications (mock email)"
+  # First send whatever is already due for other groups in this local database (earlier runs, seeded
+  # data): each cron run sends at most REMINDER_SEND_BUDGET emails, and the checks below expect this
+  # section's reminders to go out on the first run. Stops once a run sends nothing new.
+  touch "$MOCK_EMAIL_LOG"
+  for _ in $(seq 1 30); do
+    BEFORE_DRAIN=$(wc -l < "$MOCK_EMAIL_LOG"); trigger
+    [ "$(( $(wc -l < "$MOCK_EMAIL_LOG") - BEFORE_DRAIN ))" -eq 0 ] && break
+  done
   RUN=$RANDOM
   sent_to() { jq -c --arg to "$1" 'select(.to[0]==$to)' "$MOCK_EMAIL_LOG" | wc -l | tr -d ' '; }
   subjects() { jq -r --arg to "$1" 'select(.to[0]==$to)|.subject' "$MOCK_EMAIL_LOG" | sort | tr '\n' '|'; }
