@@ -20,7 +20,7 @@ export async function listDinners(db: D1Database): Promise<(Dinner & { host_name
   return results;
 }
 
-/** Creates a confirmed dinner and invites every current member. */
+/** Creates a confirmed dinner, invites every current member, and seats the host. */
 export async function createDinner(
   db: D1Database,
   hostId: number,
@@ -28,6 +28,7 @@ export async function createDinner(
   input: { title: string; startsAt: number; location: string; note: string },
 ): Promise<string> {
   const publicId = randomId();
+  const now = Date.now();
   await db.batch([
     db
       .prepare(
@@ -42,6 +43,19 @@ export async function createDinner(
         )
         .bind(randomId(), id, publicId),
     ),
+    db
+      .prepare(
+        `UPDATE invitations SET rsvp = 'yes', replied_at = ?
+         WHERE person_id = ? AND dinner_id = (SELECT id FROM dinners WHERE public_id = ?)`,
+      )
+      .bind(now, hostId, publicId),
+    db
+      .prepare(
+        `INSERT INTO attendees (dinner_id, invitation_id, person_id, queued_at)
+         SELECT i.dinner_id, i.id, i.person_id, ? FROM invitations i JOIN dinners d ON d.id = i.dinner_id
+         WHERE i.person_id = ? AND d.public_id = ?`,
+      )
+      .bind(now, hostId, publicId),
   ]);
   return publicId;
 }

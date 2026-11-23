@@ -52,11 +52,21 @@ export async function listMembers(db: D1Database): Promise<Person[]> {
   return results;
 }
 
+/** New members are also invited to dinners that haven't happened yet. */
 export async function addMember(db: D1Database, name: string, phone: string): Promise<void> {
-  await db
-    .prepare("INSERT INTO people (public_id, kind, name, phone) VALUES (?, 'member', ?, ?)")
-    .bind(randomId(), name, phone)
-    .run();
+  const publicId = randomId();
+  await db.batch([
+    db
+      .prepare("INSERT INTO people (public_id, kind, name, phone) VALUES (?, 'member', ?, ?)")
+      .bind(publicId, name, phone),
+    db
+      .prepare(
+        `INSERT INTO invitations (public_id, dinner_id, person_id)
+         SELECT lower(hex(randomblob(11))), d.id, p.id FROM dinners d, people p
+         WHERE p.public_id = ? AND (d.starts_at IS NULL OR d.starts_at > ?)`,
+      )
+      .bind(publicId, Date.now()),
+  ]);
 }
 
 export async function reissueLink(db: D1Database, publicId: string): Promise<void> {

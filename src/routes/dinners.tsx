@@ -2,13 +2,17 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { can } from "../auth/permissions";
 import { forgetInvitation, forgetPerson, invitationToken } from "../auth/session";
-import { addGuest, createDinner, findDinner, listDinners, listInvitees, reissueInvitation } from "../db/dinners";
+import { addGuest, createDinner, listDinners, listInvitees, reissueInvitation } from "../db/dinners";
 import { getSettings, listMembers } from "../db/people";
+import { findOwnInvitation, listAttendees } from "../db/rsvps";
 import { normalizePhone, smsUri, whatsappUri } from "../domain/messages";
+import { assignSeats } from "../domain/seats";
 import { formatDateTime, isPast, localToUtc } from "../domain/time";
 import type { AppEnv, Dinner } from "../types";
 import { Field, Layout } from "../views/layout";
+import { RsvpPanel, WhosComing } from "../views/rsvp";
 import { absoluteUrl, neutral, problem, readForm } from "./http";
+import { loadDinner } from "./load";
 
 const dinnerForm = z.object({
   title: z.string().trim().min(1).max(120),
@@ -80,12 +84,16 @@ dinners.post("/new", async (c) => {
 });
 
 dinners.get("/d/:id", async (c) => {
-  const actor = c.get("actor");
-  const [dinner, settings] = await Promise.all([findDinner(c.env.DB, c.req.param("id")), getSettings(c.env.DB)]);
-  if (!actor || !dinner || !settings) return neutral(c);
-  const context = { ...dinner, past: isPast(dinner.starts_at, settings.time_zone) };
-  if (!can(actor, "dinner.view", context)) return neutral(c);
-  const path = `/d/${dinner.public_id}`;
+  const loaded = await loadDinner(c, c.req.param("id"), "dinner.view");
+  if (!loaded) return neutral(c);
+  const { actor, dinner, settings, path } = loaded;
+  const [invitation, attendees, invitees] = await Promise.all([
+    findOwnInvitation(c.env.DB, dinner.id, actor.person.id),
+    listAttendees(c.env.DB, dinner.id),
+    listInvitees(c.env.DB, dinner.id),
+  ]);
+  const { seated, waitlist } = assignSeats(attendees, dinner.capacity);
+  const open = dinner.status === "confirmed" && !dinner.rsvp_closed && can(actor, "rsvp.own", dinner);
   return c.html(
     <Layout title={dinner.title} actor={actor} forgetPath={`${path}/forget`}>
       <h1>{dinner.title}</h1>
@@ -99,7 +107,11 @@ dinners.get("/d/:id", async (c) => {
         </p>
       )}
       {dinner.note && <p class="note">{dinner.note}</p>}
-      {can(actor, "announce", context) && <a class="button" href={`${path}/send`}>Send invite</a>}
+      {invitation && !dinner.past && (
+        <RsvpPanel {...{ path, invitation, open, seated, waitlist }} person={actor.person} />
+      )}
+      <WhosComing {...{ seated, waitlist, invitees }} capacity={dinner.capacity} />
+      {can(actor, "announce", dinner) && <a class="button" href={`${path}/send`}>Send invite</a>}
     </Layout>,
   );
 });
@@ -111,19 +123,10 @@ dinners.post("/d/:id/forget", (c) => {
   return c.redirect(`/d/${c.req.param("id")}`, 303);
 });
 
-async function loadForSending(c: Parameters<typeof neutral>[0], id: string) {
-  const [dinner, settings] = await Promise.all([findDinner(c.env.DB, id), getSettings(c.env.DB)]);
-  if (!dinner || !settings) return null;
-  const context = { ...dinner, past: isPast(dinner.starts_at, settings.time_zone) };
-  return can(c.get("actor"), "announce", context) ? { dinner, settings } : null;
-}
-
 dinners.get("/d/:id/send", async (c) => {
-  const loaded = await loadForSending(c, c.req.param("id"));
+  const loaded = await loadDinner(c, c.req.param("id"), "announce");
   if (!loaded) return neutral(c);
-  const { dinner, settings } = loaded;
-  const actor = c.get("actor")!;
-  const path = `/d/${dinner.public_id}`;
+  const { actor, dinner, settings, path } = loaded;
   const text = (link: string) =>
     `${dinner.host_name} is hosting ${dinner.title}, ${when(dinner, settings.time_zone)}. Tap to RSVP: ${link}`;
   const groupMessage = text(absoluteUrl(c, path));
@@ -187,9 +190,9 @@ dinners.get("/d/:id/send", async (c) => {
 });
 
 dinners.post("/d/:id/guests", async (c) => {
-  const loaded = await loadForSending(c, c.req.param("id"));
+  const loaded = await loadDinner(c, c.req.param("id"), "announce");
   if (!loaded) return neutral(c);
-  const back = `/d/${loaded.dinner.public_id}/send`;
+  const back = `${loaded.path}/send`;
   const form = await readForm(c, guestForm);
   if (!form.success) return problem(c, "Enter the guest's name.", back);
   const phone = form.data.phone ? normalizePhone(form.data.phone) : null;
@@ -199,8 +202,8 @@ dinners.post("/d/:id/guests", async (c) => {
 });
 
 dinners.post("/d/:id/invitations/:invitation/reissue", async (c) => {
-  const loaded = await loadForSending(c, c.req.param("id"));
+  const loaded = await loadDinner(c, c.req.param("id"), "announce");
   if (!loaded) return neutral(c);
   await reissueInvitation(c.env.DB, loaded.dinner.id, c.req.param("invitation"));
-  return c.redirect(`/d/${loaded.dinner.public_id}/send`, 303);
+  return c.redirect(`${loaded.path}/send`, 303);
 });
