@@ -45,6 +45,10 @@ export async function links(browser: Browser, page: string, kind: "k" | "i"): Pr
   return [...body.matchAll(new RegExp(`value="(${BASE}/${kind}/[^"]+)"`, "g"))].map((m) => m[1]!);
 }
 
+export async function personId(name: string): Promise<string> {
+  return (await bindings.DB.prepare("SELECT public_id FROM people WHERE name = ?").bind(name).first<{ public_id: string }>())!.public_id;
+}
+
 /** Sam organizes; Ana hosts; Bo is a member. Cards are in name order. */
 export async function seed() {
   const sam = new Browser();
@@ -56,7 +60,7 @@ export async function seed() {
   const bo = new Browser();
   await ana.get(anaLink!);
   await bo.get(boLink!);
-  const created = await ana.post("/new", { title: "Soup night", startsAt: "2099-02-07T18:30", location: "Ana's", note: "", capacity: "" });
+  const created = await ana.post("/new", { host: await personId("Ana"), title: "Soup night", startsAt: "2099-02-07T18:30", location: "Ana's", note: "", capacity: "" });
   return { sam, ana, bo, anaLink: anaLink!, boLink: boLink!, samLink: samLink!, dinner: created.headers.get("Location")! };
 }
 
