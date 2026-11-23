@@ -6,9 +6,17 @@
 set -u
 BASE=${BASE:-http://localhost:8787}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-# The setup secret: $SETUP_SECRET if set, else the one in .dev.vars (what `npm run dev` uses).
-SECRET=${SETUP_SECRET:-$(sed -n 's/^SETUP_SECRET=//p' "$ROOT/.dev.vars" 2>/dev/null)}
-[ -n "$SECRET" ] || { echo "Set SETUP_SECRET in .dev.vars (see .dev.vars.example)"; exit 2; }
+. "$ROOT/scripts/lib.sh"
+require_tools curl jq node
+SECRET=$(read_setup_secret "$ROOT") || exit 2
+require_server "$BASE"
+# Fail fast, with the reason, if the server rejects the secret (otherwise every check fails).
+if [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/admin/groups" -H "x-setup-secret: $SECRET" \
+      -H 'content-type: application/json' -d '{}')" = 403 ]; then
+  echo "The setup secret was rejected: the running server has a different SETUP_SECRET than .dev.vars." >&2
+  echo "If you created or edited .dev.vars after starting 'npm run dev', restart it." >&2
+  exit 2
+fi
 FAILS=0
 
 # req TOKEN METHOD PATH [JSON]  -> sets $BODY and $CODE

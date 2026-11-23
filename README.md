@@ -46,6 +46,12 @@ npm run seed                       # demo group: prints a personal link for Alex
 Open the links in different browsers or private windows to act as different people. Bea, Cal and Dee haven't
 filled in dietary info, so the app asks for it before they can RSVP. Phone-sized: use your browser's device mode.
 
+If `npm run seed` reports that the setup secret was rejected, the running server loaded a different `SETUP_SECRET`
+than `.dev.vars` has now (for example, `.dev.vars` was created or edited after `npm run dev` started): stop `npm run dev`
+and start it again. An HTTP 500 on a fresh checkout usually means the migrations haven't been applied
+(`npm run db:migrate:local`, then restart). You can also create a group by hand (see the end of this section): the JSON
+it prints includes `adminLink`, or the error.
+
 ### Tests
 
 ```sh
