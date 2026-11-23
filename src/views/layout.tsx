@@ -18,7 +18,7 @@ export function Layout(props: { title: string; actor?: Actor | null; forgetPath?
       <body>
         {props.actor && (
           <header>
-            {props.actor.scope === "full" ? <a href="/">Dinners</a> : <span>Dinner invite</span>}
+            {props.actor.scope === "full" ? <nav><a href="/">Dinners</a> <a href="/profile">Profile</a></nav> : <span>Dinner invite</span>}
             <form method="post" action={props.forgetPath ?? "/forget"}>
               <span>You're {props.actor.person.name}</span>
               <button class="link">Not you?</button>

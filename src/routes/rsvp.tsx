@@ -1,9 +1,10 @@
 import { type Context, Hono } from "hono";
 import { z } from "zod";
-import { addPlusOne, findOwnInvitation, removePlusOne, setRsvp } from "../db/rsvps";
+import { addPlusOne, findOwnInvitation, removePlusOne, setRsvp, updatePlusOne } from "../db/rsvps";
 import type { AppEnv } from "../types";
 import { neutral, problem, readForm } from "./http";
 import { loadDinner } from "./load";
+import { readNeeds } from "./profile";
 
 const rsvpForm = z.object({ rsvp: z.enum(["yes", "maybe", "no"]) });
 const plusOneForm = z.object({ name: z.string().trim().min(1).max(80) });
@@ -39,9 +40,19 @@ rsvp.post("/d/:id/plus-ones", async (c) => {
   if (own.actor.person.kind !== "member") return problem(c, "Ask the host before bringing someone.", own.path, 403);
   const form = await readForm(c, plusOneForm);
   if (!form.success) return problem(c, "Enter their name.", own.path);
-  if (!(await addPlusOne(c.env.DB, own.invitation.id, form.data.name))) {
+  if (!(await addPlusOne(c.env.DB, own.invitation.id, form.data.name, await readNeeds(c)))) {
     return problem(c, "Say yes first. You can bring up to 10 people.", own.path, 409);
   }
+  return c.redirect(own.path, 303);
+});
+
+rsvp.post("/d/:id/plus-ones/:attendee/edit", async (c) => {
+  const own = await loadOwn(c, c.req.param("id"));
+  if (own instanceof Response) return own;
+  const form = await readForm(c, plusOneForm);
+  if (!form.success) return problem(c, "Enter their name.", own.path);
+  const id = Number(c.req.param("attendee"));
+  await updatePlusOne(c.env.DB, own.invitation.id, id, form.data.name, await readNeeds(c));
   return c.redirect(own.path, 303);
 });
 

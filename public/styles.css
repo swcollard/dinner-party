@@ -39,3 +39,8 @@ details form { margin: 0.5rem 0; }
 section { margin: 1.5rem 0; }
 .check { display: flex; align-items: center; gap: 0.5rem; min-height: 44px; }
 .check input { width: 1.5rem; min-height: 1.5rem; height: 1.5rem; margin: 0; flex: none; }
+fieldset { margin: 0; padding: 0.5rem 1rem; border: 1px solid var(--line); border-radius: 0.5rem; }
+legend { padding: 0 0.25rem; font-weight: 600; }
+.checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr)); gap: 0 0.5rem; }
+.rows details { flex-basis: 100%; }
+nav { display: flex; gap: 1rem; }

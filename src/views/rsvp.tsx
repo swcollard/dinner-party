@@ -1,6 +1,7 @@
 import type { Invitee } from "../db/dinners";
 import type { Attendee } from "../db/rsvps";
 import type { Invitation, Person } from "../types";
+import { NeedFields } from "./diet";
 import { Field } from "./layout";
 
 const CHOICES = [
@@ -64,6 +65,16 @@ export function RsvpPanel(props: {
                     <button class="link" aria-label={`Remove ${a.name}`}>Remove</button>
                   </form>
                 )}
+                {open && (
+                  <details>
+                    <summary>Edit {a.name}</summary>
+                    <form method="post" action={`${path}/plus-ones/${a.id}/edit`} class="stack">
+                      <Field label="Their name" name="name" value={a.name} required />
+                      <NeedFields needs={a.diet} />
+                      <button>Save</button>
+                    </form>
+                  </details>
+                )}
               </li>
             ))}
           </ul>
@@ -72,6 +83,10 @@ export function RsvpPanel(props: {
               <summary>Bringing someone?</summary>
               <form method="post" action={`${path}/plus-ones`} class="stack">
                 <Field label="Their name" name="name" required />
+                <details>
+                  <summary>Dietary needs (optional)</summary>
+                  <NeedFields needs={[]} />
+                </details>
                 <button>Add plus-one</button>
               </form>
             </details>

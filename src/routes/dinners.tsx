@@ -12,11 +12,13 @@ import {
   updateDinner,
 } from "../db/dinners";
 import { getSettings, listMembers } from "../db/people";
+import { needsForDinner } from "../db/diet";
 import { findOwnInvitation, listAttendees } from "../db/rsvps";
 import { normalizePhone, smsUri, whatsappUri } from "../domain/messages";
 import { assignSeats } from "../domain/seats";
 import { formatDateTime, isPast, localToUtc, utcToLocal } from "../domain/time";
 import type { AppEnv, Dinner } from "../types";
+import { DietSummary } from "../views/diet";
 import { Field, Layout } from "../views/layout";
 import { RsvpPanel, WhosComing } from "../views/rsvp";
 import { absoluteUrl, neutral, problem, readForm } from "./http";
@@ -202,11 +204,16 @@ dinners.get("/d/:id", async (c) => {
   const loaded = await loadDinner(c, c.req.param("id"), "dinner.view");
   if (!loaded) return neutral(c);
   const { actor, dinner, settings, path } = loaded;
-  const [invitation, attendees, invitees] = await Promise.all([
+  const [invitation, attendees, invitees, needs] = await Promise.all([
     findOwnInvitation(c.env.DB, dinner.id, actor.person.id),
     listAttendees(c.env.DB, dinner.id),
     listInvitees(c.env.DB, dinner.id),
+    needsForDinner(c.env.DB, dinner.id),
   ]);
+  const withNeeds = attendees.map((a) => ({
+    ...a,
+    needs: a.person_id === null ? a.diet : (needs.get(a.person_id) ?? []),
+  }));
   const { seated, waitlist } = assignSeats(attendees, dinner.capacity);
   const open = dinner.status === "confirmed" && !dinner.rsvp_closed && can(actor, "rsvp.own", dinner);
   return c.html(
@@ -227,6 +234,8 @@ dinners.get("/d/:id", async (c) => {
         <RsvpPanel {...{ path, invitation, open, seated, waitlist }} person={actor.person} hosting={dinner.host_id === actor.person.id} />
       )}
       <WhosComing {...{ seated, waitlist, invitees }} capacity={dinner.capacity} />
+      <DietSummary attendees={withNeeds} showNames={actor.person.kind === "member"} />
+      {!dinner.past && <p><a href={`${path}/diet`}>Set your dietary needs</a></p>}
       <div class="actions">
         {can(actor, "announce", dinner) && dinner.status === "confirmed" && (
           <a class="button" href={`${path}/send`}>Send invite</a>
