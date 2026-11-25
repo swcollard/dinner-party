@@ -50,6 +50,10 @@ function DinnerFields(props: { dinner?: Dinner; timeZone?: string }) {
   );
 }
 
+function CancelledBanner() {
+  return <p role="status"><strong>✕ This dinner is cancelled.</strong></p>;
+}
+
 const when = (dinner: Dinner, timeZone: string) =>
   dinner.starts_at === null ? "Date to be decided" : formatDateTime(dinner.starts_at, timeZone);
 
@@ -120,6 +124,7 @@ dinners.get("/d/:id/edit", async (c) => {
   return c.html(
     <Layout title="Edit dinner" actor={actor} forgetPath={`${path}/forget`}>
       <h1>Edit dinner</h1>
+      {cancelled && <CancelledBanner />}
       <p><a href={path}>Back to {dinner.title}</a></p>
       <form method="post" action={`${path}/edit`} class="stack">
         <DinnerFields dinner={dinner} timeZone={settings.time_zone} />
@@ -178,6 +183,7 @@ dinners.post("/d/:id/edit", async (c) => {
       </Layout>,
     );
   }
+  // TODO(milestone 5): add notices for people moved to the waitlist and for date, time or place changes.
   await updateDinner(c.env.DB, dinner.id, { ...form.data, startsAt, rsvpClosed: !!form.data.rsvpClosed });
   return c.redirect(path, 303);
 });
@@ -186,6 +192,7 @@ for (const action of ["cancel", "restore"] as const) {
   dinners.post(`/d/:id/${action}`, async (c) => {
     const loaded = await loadDinner(c, c.req.param("id")!, "dinner.edit");
     if (!loaded) return neutral(c);
+    // TODO(milestone 5): add notices for everyone who said yes.
     await setCancelled(c.env.DB, loaded.dinner.id, action === "cancel");
     return c.redirect(loaded.path, 303);
   });
@@ -205,7 +212,7 @@ dinners.get("/d/:id", async (c) => {
   return c.html(
     <Layout title={dinner.title} actor={actor} forgetPath={`${path}/forget`}>
       <h1>{dinner.title}</h1>
-      {dinner.status === "cancelled" && <p role="status"><strong>✕ This dinner is cancelled.</strong></p>}
+      {dinner.status === "cancelled" && <CancelledBanner />}
       <p>{when(dinner, settings.time_zone)}</p>
       <p>Host: {dinner.host_name}</p>
       {dinner.location && (

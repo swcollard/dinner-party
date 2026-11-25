@@ -59,6 +59,7 @@ describe("editing", () => {
     await bo.post(`${dinner}/rsvp`, { rsvp: "yes" });
     await ana.post(`${dinner}/cancel`);
     expect((await bo.get(dinner)).body).toContain("This dinner is cancelled.");
+    expect((await ana.get(`${dinner}/edit`)).body).toContain("This dinner is cancelled.");
     expect((await bo.get("/")).body).toContain("Cancelled");
     await ana.post(`${dinner}/restore`);
     expect((await bo.get(dinner)).body).toContain("You&#39;re coming.");
