@@ -29,6 +29,11 @@ cloudflared tunnel --url http://localhost:8787
 npm run dev -- --var PUBLIC_BASE_URL:https://<your-tunnel>.trycloudflare.com
 ```
 
+## Known limits
+
+- Calendar entries are a snapshot. If a dinner moves or is cancelled, anything already added to a calendar
+  stays as it was, so hosts should tell people to update it.
+
 ## Tests
 
 ```sh
