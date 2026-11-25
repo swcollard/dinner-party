@@ -1,6 +1,6 @@
 # Dinner Club App: Product Requirements Document
 
-Nov 23, 2026 · @Sam Collard
+Nov 23, 2026 · @swcollard 
 
 ## Overview
 
