@@ -1,4 +1,5 @@
 import { randomId } from "../auth/tokens";
+import { isPast } from "../domain/time";
 import type { GroupSettings, Person } from "../types";
 
 export function getSettings(db: D1Database): Promise<GroupSettings | null> {
@@ -52,11 +53,26 @@ export async function listMembers(db: D1Database): Promise<Person[]> {
   return results;
 }
 
-export async function addMember(db: D1Database, name: string, phone: string): Promise<void> {
-  await db
-    .prepare("INSERT INTO people (public_id, kind, name, phone) VALUES (?, 'member', ?, ?)")
-    .bind(randomId(), name, phone)
-    .run();
+/** New members join dinners that aren't past, including cancelled ones, which the host may bring back. */
+export async function addMember(db: D1Database, name: string, phone: string, timeZone: string): Promise<void> {
+  const publicId = randomId();
+  const { results } = await db
+    .prepare("SELECT id, starts_at FROM dinners")
+    .all<{ id: number; starts_at: number | null }>();
+  await db.batch([
+    db
+      .prepare("INSERT INTO people (public_id, kind, name, phone) VALUES (?, 'member', ?, ?)")
+      .bind(publicId, name, phone),
+    ...results
+      .filter((dinner) => !isPast(dinner.starts_at, timeZone))
+      .map((dinner) =>
+        db
+          .prepare(
+            "INSERT INTO invitations (public_id, dinner_id, person_id) SELECT ?, ?, id FROM people WHERE public_id = ?",
+          )
+          .bind(randomId(), dinner.id, publicId),
+      ),
+  ]);
 }
 
 export async function reissueLink(db: D1Database, publicId: string): Promise<void> {

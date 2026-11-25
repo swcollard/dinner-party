@@ -28,11 +28,13 @@ async function hmac(secret: string, message: string): Promise<Uint8Array> {
 }
 
 // Only needs to be unknown to callers, so one per isolate is enough (and keeps the key cache small).
-const comparisonKey = randomId();
+// Created on first use: Workers refuse to start if random values are generated at module level.
+let comparisonKey: string | undefined;
 
 /** Compares digests, so neither length nor content leaks through timing. */
 export async function secretsMatch(a: string, b: string): Promise<boolean> {
-  const [x, y] = await Promise.all([hmac(comparisonKey, a), hmac(comparisonKey, b)]);
+  const key = (comparisonKey ??= randomId());
+  const [x, y] = await Promise.all([hmac(key, a), hmac(key, b)]);
   return x.reduce((diff, byte, i) => diff | (byte ^ y[i]!), 0) === 0;
 }
 
