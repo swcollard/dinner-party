@@ -1,13 +1,14 @@
+import type { Need } from "../domain/diet";
 import type { Seat } from "../domain/seats";
 import type { Invitation } from "../types";
 
-export type Attendee = Seat & { name: string; plus_one_of: string | null };
+export type Attendee = Seat & { name: string; plus_one_of: string | null; diet: Need[] };
 
 /** Everyone who wants a seat: people who said yes, and their plus-ones. */
 export async function listAttendees(db: D1Database, dinnerId: number): Promise<Attendee[]> {
   const { results } = await db
     .prepare(
-      `SELECT a.id, a.invitation_id, a.person_id, a.queued_at,
+      `SELECT a.id, a.invitation_id, a.person_id, a.queued_at, a.diet,
               COALESCE(a.plus_one_name, p.name) AS name,
               CASE WHEN a.person_id IS NULL THEN p.name END AS plus_one_of
        FROM attendees a
@@ -16,8 +17,8 @@ export async function listAttendees(db: D1Database, dinnerId: number): Promise<A
        WHERE a.dinner_id = ? AND i.rsvp = 'yes' AND p.removed_at IS NULL`,
     )
     .bind(dinnerId)
-    .all<Attendee>();
-  return results;
+    .all<Omit<Attendee, "diet"> & { diet: string }>();
+  return results.map((a) => ({ ...a, diet: JSON.parse(a.diet) as Need[] }));
 }
 
 export function findOwnInvitation(db: D1Database, dinnerId: number, personId: number): Promise<Invitation | null> {
@@ -61,16 +62,30 @@ export async function setRsvp(
 const MAX_PLUS_ONES = 10;
 
 /** Adds nothing unless the invitation is a yes with room for more plus-ones. */
-export async function addPlusOne(db: D1Database, invitationId: number, name: string): Promise<boolean> {
+export async function addPlusOne(db: D1Database, invitationId: number, name: string, diet: Need[]): Promise<boolean> {
   const result = await db
     .prepare(
-      `INSERT INTO attendees (dinner_id, invitation_id, plus_one_name, queued_at)
-       SELECT dinner_id, id, ?, ? FROM invitations i WHERE id = ? AND rsvp = 'yes'
+      `INSERT INTO attendees (dinner_id, invitation_id, plus_one_name, diet, queued_at)
+       SELECT dinner_id, id, ?, ?, ? FROM invitations i WHERE id = ? AND rsvp = 'yes'
        AND (SELECT COUNT(*) FROM attendees a WHERE a.invitation_id = i.id AND a.person_id IS NULL) < ${MAX_PLUS_ONES}`,
     )
-    .bind(name, Date.now(), invitationId)
+    .bind(name, JSON.stringify(diet), Date.now(), invitationId)
     .run();
   return result.meta.changes > 0;
+}
+
+/** Edits in place, so a plus-one keeps their spot in line. */
+export async function updatePlusOne(
+  db: D1Database,
+  invitationId: number,
+  attendeeId: number,
+  name: string,
+  diet: Need[],
+): Promise<void> {
+  await db
+    .prepare("UPDATE attendees SET plus_one_name = ?, diet = ? WHERE id = ? AND invitation_id = ? AND person_id IS NULL")
+    .bind(name, JSON.stringify(diet), attendeeId, invitationId)
+    .run();
 }
 
 export async function removePlusOne(db: D1Database, invitationId: number, attendeeId: number): Promise<void> {

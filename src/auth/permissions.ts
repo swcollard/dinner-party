@@ -47,6 +47,8 @@ export function can(
   if (actor.scope === "dinner") {
     if (dinner && dinner.id !== actor.dinnerId) return false;
     if (dinner?.past && action !== "dinner.view") return false;
+    // Profiles apply to every dinner. A guest's only ever covers this one.
+    if (action === "profile.own") return actor.person.kind === "guest";
     return ONE_DINNER_ACTIONS.includes(action);
   }
   if (actor.person.kind !== "member") return false;
