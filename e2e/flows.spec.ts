@@ -1,0 +1,112 @@
+import AxeBuilder from "@axe-core/playwright";
+import { type Browser, type Page, expect, test } from "@playwright/test";
+
+let organizer: Page;
+let anaLink: string;
+let boLink: string;
+let dinnerUrl: string;
+
+async function newPerson(browser: Browser, link: string, options = {}) {
+  const page = await (await browser.newContext(options)).newPage();
+  await page.goto(link);
+  return page;
+}
+
+async function expectGoodPage(page: Page) {
+  const { violations } = await new AxeBuilder({ page }).analyze();
+  expect(violations.map((v) => `${page.url()} ${v.id}: ${v.nodes.map((n) => n.html).join(" | ")}`)).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+}
+
+async function linkFor(page: Page, name: string) {
+  const card = page.getByRole("listitem").filter({ has: page.getByRole("heading", { name }) });
+  return card.locator("input[readonly]").inputValue();
+}
+
+test.describe.configure({ mode: "serial" });
+
+test.beforeAll(async ({ browser }) => {
+  organizer = await (await browser.newContext()).newPage();
+  await organizer.goto("/setup");
+  await expectGoodPage(organizer);
+  await organizer.getByLabel("Setup secret").fill("e2e");
+  await organizer.getByLabel("Group name").fill("Supper Club");
+  await organizer.getByLabel("Your name").fill("Sam");
+  await organizer.getByRole("button", { name: "Create group" }).click();
+  for (const [name, phone] of [["Ana", "5125550101"], ["Bo", "5125550102"]]) {
+    await organizer.getByLabel("Name", { exact: true }).fill(name!);
+    await organizer.getByLabel("Phone").fill(phone!);
+    await organizer.getByRole("button", { name: "Add member" }).click();
+  }
+  anaLink = await linkFor(organizer, "Ana");
+  boLink = await linkFor(organizer, "Bo");
+});
+
+test("a host sets up a dinner and sends it", async ({ browser }) => {
+  const ana = await newPerson(browser, anaLink);
+  await ana.getByRole("link", { name: "New dinner" }).click();
+  await expectGoodPage(ana);
+  await ana.getByLabel("Title").fill("Soup night");
+  await ana.getByLabel("Date and time").fill("2099-02-07T18:30");
+  await ana.getByLabel(/Seats/).fill("3");
+  await ana.getByRole("button", { name: "Create dinner" }).click();
+  dinnerUrl = ana.url();
+  await expect(ana.getByText("Saturday, Feb 7")).toBeVisible();
+  await ana.getByRole("link", { name: "Edit dinner" }).click();
+  await expectGoodPage(ana);
+  await ana.goto(`${dinnerUrl}/send`);
+  await expectGoodPage(ana);
+});
+
+test("a member taps the invite, says yes and adds a plus-one", async ({ browser }) => {
+  const bo = await newPerson(browser, boLink);
+  await bo.goto(dinnerUrl);
+  await bo.getByRole("button", { name: "Yes" }).click();
+  await expect(bo.getByRole("status")).toHaveText("You're coming.");
+  await bo.getByText("Bringing someone?").click();
+  await bo.getByLabel("Their name").last().fill("Cy");
+  await bo.getByText("Dietary needs (optional)").click();
+  await bo.locator("details form").last().getByLabel("peanuts").check();
+  await bo.getByRole("button", { name: "Add plus-one" }).click();
+  await expect(bo.getByText("Cy (with Bo): peanuts allergy")).toBeVisible();
+  await expect(bo.getByText("3 coming of 3 seats")).toBeVisible();
+  await expectGoodPage(bo);
+});
+
+test("calendar file downloads", async ({ browser }) => {
+  const bo = await newPerson(browser, boLink);
+  await bo.goto(dinnerUrl);
+  const download = bo.waitForEvent("download");
+  await bo.getByRole("link", { name: "Add to calendar" }).click();
+  expect((await download).suggestedFilename()).toBe("dinner.ics");
+});
+
+test("the waitlist and RSVP work without JavaScript", async ({ browser }) => {
+  const sam = await newPerson(browser, await linkFor(organizer, "Sam"), { javaScriptEnabled: false });
+  await sam.goto(dinnerUrl);
+  await sam.getByRole("button", { name: "Yes" }).click();
+  await expect(sam.getByRole("status")).toHaveText("You're number 1 on the waitlist.");
+});
+
+test("profile and members pages are accessible", async ({ browser }) => {
+  const bo = await newPerson(browser, boLink);
+  await expectGoodPage(bo);
+  await bo.getByRole("link", { name: "Profile" }).click();
+  await expectGoodPage(bo);
+  await expectGoodPage(organizer);
+  await bo.goto(`${dinnerUrl}/diet`);
+  await expectGoodPage(bo);
+});
+
+test("pages are accessible in dark mode", async ({ browser }) => {
+  const ana = await newPerson(browser, anaLink, { colorScheme: "dark" });
+  await ana.goto(dinnerUrl);
+  await expectGoodPage(ana);
+});
+
+test("a stranger sees nothing", async ({ browser }) => {
+  const stranger = await newPerson(browser, dinnerUrl);
+  await expect(stranger.getByRole("heading")).toHaveText("Open your personal link");
+  await expect(stranger.getByText("Soup")).toHaveCount(0);
+  await expectGoodPage(stranger);
+});
