@@ -3,6 +3,7 @@ import type { Actor, Dinner } from "../types";
 export type Action =
   | "dinner.view"
   | "dinner.create"
+  | "dinner.chooseHost"
   | "dinner.edit"
   | "poll.confirm"
   | "poll.vote"
@@ -29,12 +30,16 @@ const HOST_ACTIONS: Action[] = [
 ];
 const NOT_ABOUT_A_DINNER: Action[] = [
   "dinner.create",
+  "dinner.chooseHost",
   "profile.own",
   "members.manage",
   "seasons.manage",
 ];
 
-/** The PRD permissions table, plus: any member may create a dinner and becomes its host. */
+/**
+ * The PRD permissions table, plus: any member may create a dinner and becomes its host,
+ * and only organizers choose someone else.
+ */
 export function can(
   actor: Actor | null,
   action: Action,

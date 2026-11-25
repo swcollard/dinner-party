@@ -38,7 +38,7 @@ const dinnerForm = z.object({
   rsvpClosed: z.literal("on").optional(),
   confirmed: z.literal("1").optional(),
 });
-const newDinnerForm = dinnerForm.extend({ host: z.string() });
+const newDinnerForm = dinnerForm.extend({ host: z.string().optional() });
 const guestForm = z.object({ name: z.string().trim().min(1).max(80), phone: z.string().trim() });
 
 function DinnerFields(props: { dinner?: Dinner; timeZone?: string }) {
@@ -94,14 +94,14 @@ dinners.get("/", async (c) => {
 dinners.get("/new", async (c) => {
   const actor = c.get("actor");
   if (!actor || !can(actor, "dinner.create")) return neutral(c);
-  const people = await listMembers(c.env.DB);
+  const people = can(actor, "dinner.chooseHost") ? await listMembers(c.env.DB) : [actor.person];
   return c.html(
     <Layout title="New dinner" actor={actor}>
       <h1>New dinner</h1>
       <form method="post" action="/new" class="stack">
         <label>
           Host
-          <select name="host">
+          <select name="host" disabled={people.length === 1}>
             {people.map((p) => (
               <option value={p.public_id} selected={p.id === actor.person.id}>
                 {p.id === actor.person.id ? `${p.name} (you)` : p.name}
@@ -128,7 +128,11 @@ dinners.post("/new", async (c) => {
   if (!form.success || startsAt === null) return problem(c, FORM_HELP, "/new");
   if (isPast(startsAt, settings.time_zone)) return problem(c, PAST_HELP, "/new");
   const people = await listMembers(c.env.DB);
-  const host = people.find((p) => p.public_id === form.data.host);
+  const hostId = form.data.host ?? actor.person.public_id;
+  if (hostId !== actor.person.public_id && !can(actor, "dinner.chooseHost")) {
+    return problem(c, "Only an organizer can choose someone else to host.", "/new", 403);
+  }
+  const host = people.find((p) => p.public_id === hostId);
   if (!host) return problem(c, "Choose a host from the group.", "/new");
   const memberIds = people.map((p) => p.id);
   const id = await createDinner(c.env.DB, host.id, memberIds, { ...form.data, startsAt });

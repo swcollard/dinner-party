@@ -67,20 +67,33 @@ describe("editing", () => {
 });
 
 describe("choosing a host", () => {
-  it("defaults to you and lists the group", async () => {
-    const { bo } = await seed();
-    const { body } = await bo.get("/new");
-    expect(body).toMatch(/<option[^>]*selected[^>]*>Bo \(you\)<\/option>/);
+  it("defaults to you, and only organizers see the group", async () => {
+    const { sam, bo } = await seed();
+    const { body } = await sam.get("/new");
+    expect(body).toMatch(/<option[^>]*selected[^>]*>Sam \(you\)<\/option>/);
     expect(body).toContain(">Ana</option>");
+    const own = (await bo.get("/new")).body;
+    expect(own).toContain(">Bo (you)</option>");
+    expect(own).not.toContain(">Ana</option>");
   });
-  it("gives the chosen member the dinner and a seat", async () => {
-    const { ana, bo } = await seed();
-    const path = (await bo.post("/new", { ...form, host: await personId("Ana") })).headers.get("Location")!;
-    const { body } = await bo.get(path);
+  it("lets an organizer give someone the dinner and a seat", async () => {
+    const { sam, ana, bo } = await seed();
+    const path = (await sam.post("/new", { ...form, host: await personId("Ana") })).headers.get("Location")!;
+    const { body } = await sam.get(path);
     expect(body).toContain("Host: Ana");
     expect(body).toContain("You haven&#39;t replied yet.");
     expect((await ana.get(`${path}/edit`)).status).toBe(200);
+    expect((await sam.get(`${path}/edit`)).status).toBe(200);
     expect((await bo.get(`${path}/edit`)).status).toBe(404);
+  });
+  it("makes other members the host of what they create", async () => {
+    const { bo } = await seed();
+    const refused = await bo.post("/new", { ...form, host: await personId("Ana") });
+    expect(refused.status).toBe(403);
+    expect(await bindings.DB.prepare("SELECT COUNT(*) AS n FROM dinners").first()).toEqual({ n: 1 });
+    const path = (await bo.post("/new", form)).headers.get("Location")!;
+    expect((await bo.get(path)).body).toContain("Host: Bo");
+    expect((await bo.get(`${path}/edit`)).status).toBe(200);
   });
   it("must be a current member, not a guest", async () => {
     const { ana, sam, dinner } = await seed();
@@ -88,7 +101,7 @@ describe("choosing a host", () => {
     const bo = await personId("Bo");
     await sam.post(`/members/${bo}/remove`);
     for (const host of [await personId("Cy"), bo, "nobody"]) {
-      const response = await ana.post("/new", { ...form, host });
+      const response = await sam.post("/new", { ...form, host });
       expect(response.status).toBe(400);
       expect(response.body).toContain("Choose a host");
     }

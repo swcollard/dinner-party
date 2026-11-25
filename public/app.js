@@ -20,3 +20,10 @@ for (const button of document.querySelectorAll("[data-share]")) {
   // Rejects when the person closes the share sheet, which is fine.
   button.addEventListener("click", () => navigator.share({ text: button.dataset.share }).catch(() => {}));
 }
+
+// Text typed beside "Other" counts only while its box is ticked, so typing ticks it.
+for (const text of document.querySelectorAll('.other [name="other"]')) {
+  text.addEventListener("input", () => {
+    if (text.value.trim()) text.closest(".other").querySelector('[type="checkbox"]').checked = true;
+  });
+}
