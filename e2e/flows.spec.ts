@@ -46,12 +46,16 @@ test("a host sets up a dinner and sends it", async ({ browser }) => {
   const ana = await newPerson(browser, anaLink);
   await ana.getByRole("link", { name: "New dinner" }).click();
   await expectGoodPage(ana);
+  await expect(ana.getByLabel("Host").locator("option")).toHaveText(["Ana (you)"]);
+  await expect(ana.getByLabel("Host")).toBeDisabled();
   await ana.getByLabel("Title").fill("Soup night");
+  await ana.getByLabel("Address").fill("12 Oak St, Austin");
   await ana.getByLabel("Date and time").fill("2099-02-07T18:30");
   await ana.getByLabel(/Seats/).fill("3");
   await ana.getByRole("button", { name: "Create dinner" }).click();
   dinnerUrl = ana.url();
   await expect(ana.getByText("Saturday, Feb 7")).toBeVisible();
+  await expect(ana.getByRole("link", { name: "12 Oak St, Austin" })).toBeVisible();
   await ana.getByRole("link", { name: "Edit dinner" }).click();
   await expectGoodPage(ana);
   await ana.goto(`${dinnerUrl}/send`);
@@ -96,6 +100,51 @@ test("profile and members pages are accessible", async ({ browser }) => {
   await expectGoodPage(organizer);
   await bo.goto(`${dinnerUrl}/diet`);
   await expectGoodPage(bo);
+});
+
+test("other dietary needs appear on demand, save and clear", async ({ browser }) => {
+  const bo = await newPerson(browser, boLink, { javaScriptEnabled: false });
+  for (const page of ["/profile", `${dinnerUrl}/diet`]) {
+    await bo.goto(page);
+    const box = bo.getByRole("checkbox", { name: "Other" });
+    const text = bo.getByLabel("Other dietary needs");
+    await expect(text).toBeHidden();
+    await box.check();
+    await text.fill("no cilantro");
+    await bo.getByRole("button", { name: "Save" }).click();
+    await bo.goto(page);
+    await expect(box).toBeChecked();
+    await expect(text).toHaveValue("no cilantro");
+    await box.uncheck();
+    await bo.getByRole("button", { name: "Save" }).click();
+    await bo.goto(page);
+    await expect(box).not.toBeChecked();
+  }
+  // Scan with the text field showing.
+  const ana = await newPerson(browser, anaLink);
+  await ana.goto("/profile");
+  await ana.getByRole("checkbox", { name: "Other" }).check();
+  await expectGoodPage(ana);
+});
+
+test("typing an other need ticks its box where the field can't be hidden", async ({ browser }) => {
+  const bo = await newPerson(browser, boLink);
+  await bo.goto("/profile");
+  const text = bo.getByLabel("Other dietary needs");
+  await text.evaluate((input) => input.style.setProperty("display", "block"));
+  await text.fill("no cilantro");
+  await expect(bo.getByRole("checkbox", { name: "Other" })).toBeChecked();
+});
+
+test("an organizer can choose another host", async () => {
+  await organizer.goto("/new");
+  await expectGoodPage(organizer);
+  await organizer.getByLabel("Host").selectOption("Ana");
+  await organizer.getByLabel("Title").fill("Tacos");
+  await organizer.getByLabel("Date and time").fill("2099-03-07T18:30");
+  await organizer.getByRole("button", { name: "Create dinner" }).click();
+  await expect(organizer.getByText("Host: Ana")).toBeVisible();
+  await organizer.goto("/members");
 });
 
 test("pages are accessible in dark mode", async ({ browser }) => {

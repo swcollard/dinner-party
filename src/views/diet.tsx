@@ -23,14 +23,17 @@ function Choices(props: { legend: string; kind: Need["kind"]; labels: string[]; 
 }
 
 export function NeedFields(props: { needs: Need[] }) {
+  const other = props.needs.find((n) => n.kind === "other")?.label;
   return (
     <>
       <Choices legend="Allergies" kind="allergen" labels={ALLERGENS} needs={props.needs} />
       <Choices legend="Diet" kind="diet" labels={DIETS} needs={props.needs} />
-      <label>
-        Anything else
-        <input name="other" maxlength={200} value={props.needs.find((n) => n.kind === "other")?.label} />
-      </label>
+      <div class="other">
+        <label class="check">
+          <input type="checkbox" name="need" value="other" checked={other !== undefined} /> Other
+        </label>
+        <input name="other" aria-label="Other dietary needs" placeholder="Describe it" maxlength={200} value={other} />
+      </div>
     </>
   );
 }

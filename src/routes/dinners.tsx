@@ -38,6 +38,7 @@ const dinnerForm = z.object({
   rsvpClosed: z.literal("on").optional(),
   confirmed: z.literal("1").optional(),
 });
+const newDinnerForm = dinnerForm.extend({ host: z.string().optional() });
 const guestForm = z.object({ name: z.string().trim().min(1).max(80), phone: z.string().trim() });
 
 function DinnerFields(props: { dinner?: Dinner; timeZone?: string }) {
@@ -47,7 +48,7 @@ function DinnerFields(props: { dinner?: Dinner; timeZone?: string }) {
     <>
       <Field label="Title" name="title" value={dinner?.title} required />
       <Field label="Date and time" name="startsAt" type="datetime-local" value={startsAt} required />
-      <Field label="Place (optional)" name="location" value={dinner?.location} />
+      <Field label="Address (optional)" name="location" value={dinner?.location} />
       <Field label="Seats, including plus-ones (optional)" name="capacity" type="number" value={dinner?.capacity?.toString()} />
       <label>Note (optional) <textarea name="note" rows={3}>{dinner?.note}</textarea></label>
     </>
@@ -90,13 +91,24 @@ dinners.get("/", async (c) => {
   );
 });
 
-dinners.get("/new", (c) => {
+dinners.get("/new", async (c) => {
   const actor = c.get("actor");
-  if (!can(actor, "dinner.create")) return neutral(c);
+  if (!actor || !can(actor, "dinner.create")) return neutral(c);
+  const people = can(actor, "dinner.chooseHost") ? await listMembers(c.env.DB) : [actor.person];
   return c.html(
     <Layout title="New dinner" actor={actor}>
       <h1>New dinner</h1>
       <form method="post" action="/new" class="stack">
+        <label>
+          Host
+          <select name="host" disabled={people.length === 1}>
+            {people.map((p) => (
+              <option value={p.public_id} selected={p.id === actor.person.id}>
+                {p.id === actor.person.id ? `${p.name} (you)` : p.name}
+              </option>
+            ))}
+          </select>
+        </label>
         <DinnerFields />
         <button>Create dinner</button>
       </form>
@@ -111,12 +123,19 @@ dinners.post("/new", async (c) => {
   const actor = c.get("actor");
   const settings = await getSettings(c.env.DB);
   if (!actor || !settings || !can(actor, "dinner.create")) return neutral(c);
-  const form = await readForm(c, dinnerForm);
+  const form = await readForm(c, newDinnerForm);
   const startsAt = form.success ? localToUtc(form.data.startsAt, settings.time_zone) : null;
   if (!form.success || startsAt === null) return problem(c, FORM_HELP, "/new");
   if (isPast(startsAt, settings.time_zone)) return problem(c, PAST_HELP, "/new");
-  const memberIds = (await listMembers(c.env.DB)).map((m) => m.id);
-  const id = await createDinner(c.env.DB, actor.person.id, memberIds, { ...form.data, startsAt });
+  const people = await listMembers(c.env.DB);
+  const hostId = form.data.host ?? actor.person.public_id;
+  if (hostId !== actor.person.public_id && !can(actor, "dinner.chooseHost")) {
+    return problem(c, "Only an organizer can choose someone else to host.", "/new", 403);
+  }
+  const host = people.find((p) => p.public_id === hostId);
+  if (!host) return problem(c, "Choose a host from the group.", "/new");
+  const memberIds = people.map((p) => p.id);
+  const id = await createDinner(c.env.DB, host.id, memberIds, { ...form.data, startsAt });
   return c.redirect(`/d/${id}`, 303);
 });
 

@@ -49,6 +49,7 @@ describe("permissions", () => {
   const everyone = [member, host, organizer, guest, null];
   const rows = [
     ["dinner.create", [true, true, true, false, false], false],
+    ["dinner.chooseHost", [false, false, true, false, false], false],
     ["dinner.view", [true, true, true, true, false], true],
     ["dinner.edit", [false, true, true, false, false], true],
     ["poll.confirm", [false, true, true, false, false], true],

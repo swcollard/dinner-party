@@ -10,14 +10,14 @@ export const DIETS = [
   "vegetarian", "vegan", "pescatarian", "halal", "kosher", "no beef", "no pork", "no alcohol",
 ];
 
-/** Reads the checkboxes ("allergen:eggs") and free text of NeedFields, ignoring anything unknown. */
+/** Reads the checkboxes ("allergen:eggs") and free text of NeedFields, ignoring anything unknown or text without "other" checked. */
 export function parseNeeds(checked: string[], other: string): Need[] {
   const known: Need[] = [
     ...ALLERGENS.map((label) => ({ kind: "allergen" as const, label })),
     ...DIETS.map((label) => ({ kind: "diet" as const, label })),
   ];
   const needs = known.filter((n) => checked.includes(`${n.kind}:${n.label}`));
-  const text = other.trim().slice(0, 200);
+  const text = checked.includes("other") ? other.trim().slice(0, 200) : "";
   return text ? [...needs, { kind: "other", label: text }] : needs;
 }
 

@@ -6,11 +6,15 @@ const section = (body: string) => /<h2>Dietary needs<\/h2>.*?<\/section>/s.exec(
 
 describe("needs", () => {
   it("keeps known choices and trimmed text only", () => {
-    expect(parseNeeds(["allergen:eggs", "diet:eggs", "diet:vegan", "x"], "  no cilantro ")).toEqual([
+    expect(parseNeeds(["allergen:eggs", "diet:eggs", "diet:vegan", "x", "other"], "  no cilantro ")).toEqual([
       { kind: "allergen", label: "eggs" },
       { kind: "diet", label: "vegan" },
       { kind: "other", label: "no cilantro" },
     ]);
+  });
+  it("ignores other text unless checked, and a check without text", () => {
+    expect(parseNeeds([], "no cilantro")).toEqual([]);
+    expect(parseNeeds(["other"], "  ")).toEqual([]);
   });
   it("summarizes without names", () => {
     expect(anonymousSummary([[{ kind: "diet", label: "vegan" }], [{ kind: "diet", label: "vegan" }, { kind: "allergen", label: "soy" }]]))
@@ -96,7 +100,7 @@ describe("guests and plus-ones", () => {
     const { body } = await bo.get(dinner);
     expect(section(body)).toContain("<strong>Dot (with Bo):</strong> fish allergy");
     const before = await bindings.DB.prepare("SELECT id, queued_at FROM attendees WHERE plus_one_name = 'Dot'").first();
-    await bo.post(/action="([^"]+\/edit)"/.exec(body)![1]!, { name: "Dottie", other: "no olives" });
+    await bo.post(/action="([^"]+\/edit)"/.exec(body)![1]!, { name: "Dottie", need: "other", other: "no olives" });
     expect(section((await bo.get(dinner)).body)).toContain("<strong>Dottie (with Bo):</strong> no olives");
     expect(await bindings.DB.prepare("SELECT id, queued_at FROM attendees WHERE plus_one_name = 'Dottie'").first()).toEqual(before);
   });

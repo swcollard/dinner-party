@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { localToUtc, utcToLocal } from "../src/domain/time";
-import { bindings, seed } from "./helpers";
+import { bindings, personId, seed } from "./helpers";
 
 const form = { title: "Soup night", startsAt: "2099-02-07T18:30", location: "Ana's", note: "", capacity: "" };
 const row = () =>
@@ -38,7 +38,7 @@ describe("editing", () => {
   it("stops hosts choosing a past day, which would lock them out", async () => {
     const { sam, ana, dinner } = await seed();
     const past = { ...form, startsAt: "2020-02-07T18:30" };
-    expect((await ana.post("/new", past)).status).toBe(400);
+    expect((await ana.post("/new", { ...past, host: await personId("Ana") })).status).toBe(400);
     expect((await ana.post(`${dinner}/edit`, past)).status).toBe(400);
     expect((await sam.post(`${dinner}/edit`, past)).status).toBe(303);
   });
@@ -63,5 +63,47 @@ describe("editing", () => {
     expect((await bo.get("/")).body).toContain("Cancelled");
     await ana.post(`${dinner}/restore`);
     expect((await bo.get(dinner)).body).toContain("You&#39;re coming.");
+  });
+});
+
+describe("choosing a host", () => {
+  it("defaults to you, and only organizers see the group", async () => {
+    const { sam, bo } = await seed();
+    const { body } = await sam.get("/new");
+    expect(body).toMatch(/<option[^>]*selected[^>]*>Sam \(you\)<\/option>/);
+    expect(body).toContain(">Ana</option>");
+    const own = (await bo.get("/new")).body;
+    expect(own).toContain(">Bo (you)</option>");
+    expect(own).not.toContain(">Ana</option>");
+  });
+  it("lets an organizer give someone the dinner and a seat", async () => {
+    const { sam, ana, bo } = await seed();
+    const path = (await sam.post("/new", { ...form, host: await personId("Ana") })).headers.get("Location")!;
+    const { body } = await sam.get(path);
+    expect(body).toContain("Host: Ana");
+    expect(body).toContain("You haven&#39;t replied yet.");
+    expect((await ana.get(`${path}/edit`)).status).toBe(200);
+    expect((await sam.get(`${path}/edit`)).status).toBe(200);
+    expect((await bo.get(`${path}/edit`)).status).toBe(404);
+  });
+  it("makes other members the host of what they create", async () => {
+    const { bo } = await seed();
+    const refused = await bo.post("/new", { ...form, host: await personId("Ana") });
+    expect(refused.status).toBe(403);
+    expect(await bindings.DB.prepare("SELECT COUNT(*) AS n FROM dinners").first()).toEqual({ n: 1 });
+    const path = (await bo.post("/new", form)).headers.get("Location")!;
+    expect((await bo.get(path)).body).toContain("Host: Bo");
+    expect((await bo.get(`${path}/edit`)).status).toBe(200);
+  });
+  it("must be a current member, not a guest", async () => {
+    const { ana, sam, dinner } = await seed();
+    await ana.post(`${dinner}/guests`, { name: "Cy", phone: "" });
+    const bo = await personId("Bo");
+    await sam.post(`/members/${bo}/remove`);
+    for (const host of [await personId("Cy"), bo, "nobody"]) {
+      const response = await sam.post("/new", { ...form, host });
+      expect(response.status).toBe(400);
+      expect(response.body).toContain("Choose a host");
+    }
   });
 });
