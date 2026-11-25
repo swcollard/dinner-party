@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # The unit test runtime allows things a real Worker refuses to start with.
+      - name: Worker starts
+        run: |
+          npm run migrate:local
+          npx wrangler dev --port 8787 --var SETUP_SECRET:ci --var LINK_SECRET:ci-link-secret-at-least-32-characters --var PUBLIC_BASE_URL:http://localhost:8787 > wrangler.log 2>&1 &
+          server=$!
+          for attempt in $(seq 60); do
+            if curl --silent --fail --output /dev/null http://localhost:8787/setup; then
+              kill "$server"
+              exit 0
+            fi
+            kill -0 "$server" 2>/dev/null || break
+            sleep 1
+          done
+          cat wrangler.log
+          exit 1
+      - name: Browser tests
+        if: hashFiles('playwright.config.ts') != ''
+        run: |
+          npx playwright install --with-deps chromium-headless-shell
+          npm run e2e
