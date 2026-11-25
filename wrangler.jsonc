@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "dinner-club",
+  "main": "src/index.tsx",
+  "compatibility_date": "2026-06-01",
+  "assets": { "directory": "./public" },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "dinner-club-v1",
+      // Replaced with the real id by `wrangler d1 create` before the first deploy.
+      "database_id": "00000000-0000-4000-8000-00000000dc01",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // /k and /i URLs carry tokens, so request logging stays off.
+  "observability": { "enabled": false }
+}
