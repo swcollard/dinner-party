@@ -2,12 +2,20 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { can } from "../auth/permissions";
 import { forgetInvitation, forgetPerson, invitationToken } from "../auth/session";
-import { addGuest, createDinner, listDinners, listInvitees, reissueInvitation } from "../db/dinners";
+import {
+  addGuest,
+  createDinner,
+  listDinners,
+  listInvitees,
+  reissueInvitation,
+  setCancelled,
+  updateDinner,
+} from "../db/dinners";
 import { getSettings, listMembers } from "../db/people";
 import { findOwnInvitation, listAttendees } from "../db/rsvps";
 import { normalizePhone, smsUri, whatsappUri } from "../domain/messages";
 import { assignSeats } from "../domain/seats";
-import { formatDateTime, isPast, localToUtc } from "../domain/time";
+import { formatDateTime, isPast, localToUtc, utcToLocal } from "../domain/time";
 import type { AppEnv, Dinner } from "../types";
 import { Field, Layout } from "../views/layout";
 import { RsvpPanel, WhosComing } from "../views/rsvp";
@@ -19,8 +27,32 @@ const dinnerForm = z.object({
   startsAt: z.string(),
   location: z.string().trim().max(300),
   note: z.string().trim().max(2000),
+  capacity: z.union([
+    z.literal("").transform(() => null),
+    z.string().regex(/^\d+$/).transform(Number).pipe(z.number().int().min(1).max(500)),
+  ]),
+  rsvpClosed: z.literal("on").optional(),
+  confirmed: z.literal("1").optional(),
 });
 const guestForm = z.object({ name: z.string().trim().min(1).max(80), phone: z.string().trim() });
+
+function DinnerFields(props: { dinner?: Dinner; timeZone?: string }) {
+  const { dinner, timeZone } = props;
+  const startsAt = dinner?.starts_at && timeZone ? utcToLocal(dinner.starts_at, timeZone) : undefined;
+  return (
+    <>
+      <Field label="Title" name="title" value={dinner?.title} required />
+      <Field label="Date and time" name="startsAt" type="datetime-local" value={startsAt} required />
+      <Field label="Place (optional)" name="location" value={dinner?.location} />
+      <Field label="Seats, including plus-ones (optional)" name="capacity" type="number" value={dinner?.capacity?.toString()} />
+      <label>Note (optional) <textarea name="note" rows={3}>{dinner?.note}</textarea></label>
+    </>
+  );
+}
+
+function CancelledBanner() {
+  return <p role="status"><strong>✕ This dinner is cancelled.</strong></p>;
+}
 
 const when = (dinner: Dinner, timeZone: string) =>
   dinner.starts_at === null ? "Date to be decided" : formatDateTime(dinner.starts_at, timeZone);
@@ -42,6 +74,7 @@ dinners.get("/", async (c) => {
             <h2><a href={`/d/${dinner.public_id}`}>{dinner.title}</a></h2>
             <p>{when(dinner, settings.time_zone)}</p>
             <p>Host: {dinner.host_name}</p>
+            {dinner.status === "cancelled" && <p><strong>✕ Cancelled</strong></p>}
           </li>
         ))}
       </ul>
@@ -60,15 +93,15 @@ dinners.get("/new", (c) => {
     <Layout title="New dinner" actor={actor}>
       <h1>New dinner</h1>
       <form method="post" action="/new" class="stack">
-        <Field label="Title" name="title" required />
-        <Field label="Date and time" name="startsAt" type="datetime-local" required />
-        <Field label="Place (optional)" name="location" />
-        <label>Note (optional) <textarea name="note" rows={3}></textarea></label>
+        <DinnerFields />
         <button>Create dinner</button>
       </form>
     </Layout>,
   );
 });
+
+const FORM_HELP = "Add a title, date and time. Seats must be a whole number, or blank for no limit.";
+const PAST_HELP = "That day has already passed. Choose today or later.";
 
 dinners.post("/new", async (c) => {
   const actor = c.get("actor");
@@ -76,12 +109,94 @@ dinners.post("/new", async (c) => {
   if (!actor || !settings || !can(actor, "dinner.create")) return neutral(c);
   const form = await readForm(c, dinnerForm);
   const startsAt = form.success ? localToUtc(form.data.startsAt, settings.time_zone) : null;
-  if (!form.success || startsAt === null) return problem(c, "Add a title, date and time.", "/new");
+  if (!form.success || startsAt === null) return problem(c, FORM_HELP, "/new");
+  if (isPast(startsAt, settings.time_zone)) return problem(c, PAST_HELP, "/new");
   const memberIds = (await listMembers(c.env.DB)).map((m) => m.id);
-  const { title, location, note } = form.data;
-  const id = await createDinner(c.env.DB, actor.person.id, memberIds, { title, startsAt, location, note });
+  const id = await createDinner(c.env.DB, actor.person.id, memberIds, { ...form.data, startsAt });
   return c.redirect(`/d/${id}`, 303);
 });
+
+dinners.get("/d/:id/edit", async (c) => {
+  const loaded = await loadDinner(c, c.req.param("id"), "dinner.edit");
+  if (!loaded) return neutral(c);
+  const { actor, dinner, settings, path } = loaded;
+  const cancelled = dinner.status === "cancelled";
+  return c.html(
+    <Layout title="Edit dinner" actor={actor} forgetPath={`${path}/forget`}>
+      <h1>Edit dinner</h1>
+      {cancelled && <CancelledBanner />}
+      <p><a href={path}>Back to {dinner.title}</a></p>
+      <form method="post" action={`${path}/edit`} class="stack">
+        <DinnerFields dinner={dinner} timeZone={settings.time_zone} />
+        <label class="check">
+          <input type="checkbox" name="rsvpClosed" checked={!!dinner.rsvp_closed} /> Close replies
+        </label>
+        <button>Save</button>
+      </form>
+      <form method="post" action={`${path}/${cancelled ? "restore" : "cancel"}`}>
+        {cancelled ? (
+          <button class="secondary">Bring this dinner back</button>
+        ) : (
+          <details>
+            <summary>Cancel this dinner</summary>
+            <p>Replies are kept, and you can bring it back later.</p>
+            <button class="danger">Cancel dinner</button>
+          </details>
+        )}
+      </form>
+    </Layout>,
+  );
+});
+
+dinners.post("/d/:id/edit", async (c) => {
+  const loaded = await loadDinner(c, c.req.param("id"), "dinner.edit");
+  if (!loaded) return neutral(c);
+  const { actor, dinner, settings, path } = loaded;
+  const back = `${path}/edit`;
+  const form = await readForm(c, dinnerForm);
+  const startsAt = form.success ? localToUtc(form.data.startsAt, settings.time_zone) : null;
+  if (!form.success || startsAt === null) return problem(c, FORM_HELP, back);
+  // A past date would lock the host out of fixing it. Organizers can always correct history.
+  if (isPast(startsAt, settings.time_zone) && !can(actor, "dinner.edit", { ...dinner, past: true })) {
+    return problem(c, PAST_HELP, back);
+  }
+
+  const { capacity } = form.data;
+  const { seated } = assignSeats(await listAttendees(c.env.DB, dinner.id), dinner.capacity);
+  if (capacity !== null && capacity < seated.length && !form.data.confirmed) {
+    const bumped = assignSeats(seated, capacity).waitlist;
+    return c.html(
+      <Layout title="Fewer seats" actor={actor} forgetPath={`${path}/forget`}>
+        <h1>Move {bumped.length} to the waitlist?</h1>
+        <p>{seated.length} people have seats. With {capacity}, these would move: {bumped.map((a) => a.name).join(", ")}.</p>
+        <form method="post" action={back} class="actions">
+          <input type="hidden" name="title" value={form.data.title} />
+          <input type="hidden" name="startsAt" value={form.data.startsAt} />
+          <input type="hidden" name="location" value={form.data.location} />
+          <textarea name="note" hidden>{form.data.note}</textarea>
+          <input type="hidden" name="capacity" value={String(capacity)} />
+          {form.data.rsvpClosed && <input type="hidden" name="rsvpClosed" value="on" />}
+          <input type="hidden" name="confirmed" value="1" />
+          <button>Move them</button>
+          <a class="button secondary" href={back}>Go back</a>
+        </form>
+      </Layout>,
+    );
+  }
+  // TODO(milestone 5): add notices for people moved to the waitlist and for date, time or place changes.
+  await updateDinner(c.env.DB, dinner.id, { ...form.data, startsAt, rsvpClosed: !!form.data.rsvpClosed });
+  return c.redirect(path, 303);
+});
+
+for (const action of ["cancel", "restore"] as const) {
+  dinners.post(`/d/:id/${action}`, async (c) => {
+    const loaded = await loadDinner(c, c.req.param("id")!, "dinner.edit");
+    if (!loaded) return neutral(c);
+    // TODO(milestone 5): add notices for everyone who said yes.
+    await setCancelled(c.env.DB, loaded.dinner.id, action === "cancel");
+    return c.redirect(loaded.path, 303);
+  });
+}
 
 dinners.get("/d/:id", async (c) => {
   const loaded = await loadDinner(c, c.req.param("id"), "dinner.view");
@@ -97,6 +212,7 @@ dinners.get("/d/:id", async (c) => {
   return c.html(
     <Layout title={dinner.title} actor={actor} forgetPath={`${path}/forget`}>
       <h1>{dinner.title}</h1>
+      {dinner.status === "cancelled" && <CancelledBanner />}
       <p>{when(dinner, settings.time_zone)}</p>
       <p>Host: {dinner.host_name}</p>
       {dinner.location && (
@@ -111,7 +227,12 @@ dinners.get("/d/:id", async (c) => {
         <RsvpPanel {...{ path, invitation, open, seated, waitlist }} person={actor.person} hosting={dinner.host_id === actor.person.id} />
       )}
       <WhosComing {...{ seated, waitlist, invitees }} capacity={dinner.capacity} />
-      {can(actor, "announce", dinner) && <a class="button" href={`${path}/send`}>Send invite</a>}
+      <div class="actions">
+        {can(actor, "announce", dinner) && dinner.status === "confirmed" && (
+          <a class="button" href={`${path}/send`}>Send invite</a>
+        )}
+        {can(actor, "dinner.edit", dinner) && <a class="button secondary" href={`${path}/edit`}>Edit dinner</a>}
+      </div>
     </Layout>,
   );
 });
