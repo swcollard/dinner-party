@@ -1,26 +1,21 @@
-import { type Context, Hono } from "hono";
+import { Hono } from "hono";
 import { z } from "zod";
 import { can } from "../auth/permissions";
 import { listNeeds, saveNeeds, saveProfile } from "../db/diet";
-import { parseNeeds } from "../domain/diet";
 import { normalizePhone } from "../domain/messages";
 import type { AppEnv } from "../types";
 import { NeedFields } from "../views/diet";
 import { Field, Layout } from "../views/layout";
 import { neutral, problem, readForm } from "./http";
 import { loadDinner } from "./load";
+import { needFields, needsForm, toNeeds } from "./needs";
 
 const profileForm = z.object({
   name: z.string().trim().min(1).max(80),
   phone: z.string().trim(),
   textsOptOut: z.literal("on").optional(),
+  ...needFields,
 });
-
-export async function readNeeds(c: Context<AppEnv>) {
-  const body = await c.req.parseBody({ all: true });
-  const checked = [body.need ?? []].flat().filter((v) => typeof v === "string");
-  return parseNeeds(checked, typeof body.other === "string" ? body.other : "");
-}
 
 export const profile = new Hono<AppEnv>();
 
@@ -56,12 +51,13 @@ profile.post("/profile", async (c) => {
     c.env.DB,
     actor.person.id,
     { name: form.data.name, phone, textsOptOut: !!form.data.textsOptOut },
-    await readNeeds(c),
+    toNeeds(form.data),
   );
   return c.redirect("/", 303);
 });
 
-// One-dinner links can set dietary needs, but not names, phones or text preferences.
+// How guests set their needs, having no profile. Members can use it too, but not through a one-dinner
+// link: hosts can see those, and needs apply to every dinner.
 profile.get("/d/:id/diet", async (c) => {
   const loaded = await loadDinner(c, c.req.param("id"), "profile.own");
   if (!loaded) return neutral(c);
@@ -81,6 +77,8 @@ profile.get("/d/:id/diet", async (c) => {
 profile.post("/d/:id/diet", async (c) => {
   const loaded = await loadDinner(c, c.req.param("id"), "profile.own");
   if (!loaded) return neutral(c);
-  await saveNeeds(c.env.DB, loaded.actor.person.id, await readNeeds(c));
+  const form = await readForm(c, needsForm);
+  if (!form.success) return problem(c, "Try that again.", `${loaded.path}/diet`);
+  await saveNeeds(c.env.DB, loaded.actor.person.id, toNeeds(form.data));
   return c.redirect(loaded.path, 303);
 });

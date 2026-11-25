@@ -76,6 +76,7 @@ describe("permissions", () => {
     const viaLink: Actor = { scope: "dinner", dinnerId: 7, person: person(2, { is_organizer: 1 }) };
     expect(can(viaLink, "dinner.edit", dinner)).toBe(false);
     expect(can(viaLink, "members.manage")).toBe(false);
+    expect(can(viaLink, "profile.own")).toBe(false);
     expect(can(viaLink, "dinner.view", { ...dinner, id: 8 })).toBe(false);
   });
 });

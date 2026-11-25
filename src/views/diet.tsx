@@ -35,9 +35,9 @@ export function NeedFields(props: { needs: Need[] }) {
   );
 }
 
-/** Members see names; guests are outside the group, so they see only the needs. */
-export function DietSummary(props: { attendees: (Attendee & { needs: Need[] })[]; showNames: boolean }) {
-  const withNeeds = props.attendees.filter((a) => a.needs.length > 0);
+/** Members see names. Guests are outside the group, so they see only the needs of people with seats. */
+export function DietSummary(props: { attendees: (Attendee & { needs: Need[]; waitlisted: boolean })[]; showNames: boolean }) {
+  const withNeeds = props.attendees.filter((a) => a.needs.length > 0 && (props.showNames || !a.waitlisted));
   if (withNeeds.length === 0) return null;
   return (
     <section>
@@ -46,7 +46,7 @@ export function DietSummary(props: { attendees: (Attendee & { needs: Need[] })[]
         <ul>
           {withNeeds.map((a) => (
             <li>
-              <strong>{a.name}{a.plus_one_of ? ` (with ${a.plus_one_of})` : ""}:</strong>{" "}
+              <strong>{a.name}{a.plus_one_of ? ` (with ${a.plus_one_of})` : ""}{a.waitlisted ? " (waitlist)" : ""}:</strong>{" "}
               {a.needs.map(describeNeed).join(", ")}
             </li>
           ))}

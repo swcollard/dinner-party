@@ -44,13 +44,32 @@ describe("profile", () => {
     await bo.post(`${dinner}/diet`, { other: "" });
     expect(section((await bo.get(dinner)).body)).toBe("");
   });
-  it("can't be reached from a one-dinner link, except dietary needs", async () => {
-    const { ana, dinner } = await seed();
+  it("can't be changed through a member's one-dinner link", async () => {
+    const { ana, bo, dinner } = await seed();
+    await bo.post(`${dinner}/diet`, { need: "diet:vegan", other: "" });
     const browser = new Browser();
     await browser.get((await links(ana, `${dinner}/send`, "i"))[0]!);
     expect((await browser.get("/profile")).status).toBe(404);
     expect((await browser.post("/profile", { name: "X", phone: "", other: "" })).status).toBe(404);
-    expect((await browser.get(`${dinner}/diet`)).status).toBe(200);
+    expect((await browser.get(`${dinner}/diet`)).status).toBe(404);
+    expect((await browser.post(`${dinner}/diet`, { other: "" })).status).toBe(404);
+    expect((await browser.get(dinner)).body).toContain("open your personal link");
+    expect((await browser.post(`${dinner}/rsvp`, { rsvp: "yes" })).status).toBe(303);
+    expect(section((await bo.get(dinner)).body)).toContain("vegan");
+  });
+});
+
+describe("the waitlist", () => {
+  it("is labelled for members and left out for guests", async () => {
+    const { ana, bo, dinner } = await seed();
+    await bindings.DB.prepare("UPDATE dinners SET capacity = 1").run();
+    await bo.post(`${dinner}/rsvp`, { rsvp: "yes" });
+    await bo.post(`${dinner}/diet`, { need: "allergen:soy", other: "" });
+    expect(section((await ana.get(dinner)).body)).toContain("<strong>Bo (waitlist):</strong> soy allergy");
+    await ana.post(`${dinner}/guests`, { name: "Cy", phone: "" });
+    const guest = new Browser();
+    await guest.get((await links(ana, `${dinner}/send`, "i"))[1]!);
+    expect(section((await guest.get(dinner)).body)).toBe("");
   });
 });
 

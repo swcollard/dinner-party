@@ -210,11 +210,12 @@ dinners.get("/d/:id", async (c) => {
     listInvitees(c.env.DB, dinner.id),
     needsForDinner(c.env.DB, dinner.id),
   ]);
-  const withNeeds = attendees.map((a) => ({
+  const { seated, waitlist } = assignSeats(attendees, dinner.capacity);
+  const withNeeds = [...seated, ...waitlist].map((a) => ({
     ...a,
     needs: a.person_id === null ? a.diet : (needs.get(a.person_id) ?? []),
+    waitlisted: waitlist.includes(a),
   }));
-  const { seated, waitlist } = assignSeats(attendees, dinner.capacity);
   const open = dinner.status === "confirmed" && !dinner.rsvp_closed && can(actor, "rsvp.own", dinner);
   return c.html(
     <Layout title={dinner.title} actor={actor} forgetPath={`${path}/forget`}>
@@ -235,7 +236,15 @@ dinners.get("/d/:id", async (c) => {
       )}
       <WhosComing {...{ seated, waitlist, invitees }} capacity={dinner.capacity} />
       <DietSummary attendees={withNeeds} showNames={actor.person.kind === "member"} />
-      {!dinner.past && <p><a href={`${path}/diet`}>Set your dietary needs</a></p>}
+      {!dinner.past && (
+        <p>
+          {can(actor, "profile.own", dinner) ? (
+            <a href={`${path}/diet`}>Set your dietary needs</a>
+          ) : (
+            "To change your dietary needs, open your personal link."
+          )}
+        </p>
+      )}
       <div class="actions">
         {can(actor, "announce", dinner) && dinner.status === "confirmed" && (
           <a class="button" href={`${path}/send`}>Send invite</a>

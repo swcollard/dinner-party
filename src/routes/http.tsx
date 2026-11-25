@@ -11,8 +11,9 @@ export function problem(c: Context<AppEnv>, message: string, back: string, statu
   return c.html(<ErrorPage actor={c.get("actor")} message={message} back={back} />, status);
 }
 
+/** Repeated fields, such as checkboxes sharing a name, arrive as arrays. */
 export async function readForm<T extends z.ZodType>(c: Context<AppEnv>, schema: T) {
-  return schema.safeParse(await c.req.parseBody());
+  return schema.safeParse(await c.req.parseBody({ all: true }));
 }
 
 export function absoluteUrl(c: Context<AppEnv>, path: string): string {
