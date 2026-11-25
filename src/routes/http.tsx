@@ -7,7 +7,7 @@ export function neutral(c: Context<AppEnv>) {
   return c.html(<NeutralPage />, 404);
 }
 
-export function problem(c: Context<AppEnv>, message: string, back: string, status: 400 | 403 | 409 = 400) {
+export function problem(c: Context<AppEnv>, message: string, back: string, status: 400 | 403 | 404 | 409 = 400) {
   return c.html(<ErrorPage actor={c.get("actor")} message={message} back={back} />, status);
 }
 

@@ -211,6 +211,15 @@ describe("privacy and roles", () => {
     expect((await sam.post(`/members/${id}/remove`)).status).toBe(409);
     expect((await sam.post(`/members/${id}/organizer`, { on: "0" })).status).toBe(409);
   });
+  it("says when a member is already gone, rather than blaming the organizer rule", async () => {
+    const { sam, boLink } = await seed();
+    const id = new URL(boLink).pathname.slice(3).split(".")[0];
+    expect((await sam.post(`/members/${id}/remove`)).status).toBe(303);
+    for (const response of [await sam.post(`/members/${id}/remove`), await sam.post(`/members/${id}/organizer`, { on: "1" })]) {
+      expect(response.status).toBe(404);
+      expect(response.body).toContain("isn&#39;t in the group any more");
+    }
+  });
   it("ends a removed member's access", async () => {
     const { sam, bo, boLink } = await seed();
     await sam.post(`/members/${new URL(boLink).pathname.slice(3).split(".")[0]}/remove`);

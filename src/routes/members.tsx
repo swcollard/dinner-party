@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { z } from "zod";
 import { can } from "../auth/permissions";
 import { personalToken, rememberPerson } from "../auth/session";
@@ -93,18 +93,24 @@ members.post("/:id/reissue", async (c) => {
   return c.redirect("/members", 303);
 });
 
+/** Explains why an organizer change or removal did nothing: a stale page, or the last organizer. */
+async function refused(c: Context<AppEnv>, publicId: string) {
+  const person = await findActivePerson(c.env.DB, publicId);
+  return person?.kind === "member"
+    ? problem(c, "The group needs at least one organizer.", "/members", 409)
+    : problem(c, "That person isn't in the group any more.", "/members", 404);
+}
+
 members.post("/:id/organizer", async (c) => {
   const form = await readForm(c, organizerForm);
   if (!form.success) return problem(c, "Try that again.", "/members");
-  if (!(await setOrganizer(c.env.DB, c.req.param("id"), form.data.on === "1"))) {
-    return problem(c, "The group needs at least one organizer.", "/members", 409);
-  }
+  const id = c.req.param("id");
+  if (!(await setOrganizer(c.env.DB, id, form.data.on === "1"))) return refused(c, id);
   return c.redirect("/members", 303);
 });
 
 members.post("/:id/remove", async (c) => {
-  if (!(await removeMember(c.env.DB, c.req.param("id")))) {
-    return problem(c, "The group needs at least one organizer.", "/members", 409);
-  }
+  const id = c.req.param("id");
+  if (!(await removeMember(c.env.DB, id))) return refused(c, id);
   return c.redirect("/members", 303);
 });
