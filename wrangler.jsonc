@@ -8,8 +8,7 @@
     {
       "binding": "DB",
       "database_name": "dinner-club-v1",
-      // Replaced with the real id by `wrangler d1 create` before the first deploy.
-      "database_id": "00000000-0000-4000-8000-00000000dc01",
+      "database_id": "d671766c-d18d-42b7-a804-2d1fe1ce5877",
       "migrations_dir": "migrations"
     }
   ],
