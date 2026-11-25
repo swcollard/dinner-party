@@ -108,7 +108,7 @@ dinners.get("/d/:id", async (c) => {
       )}
       {dinner.note && <p class="note">{dinner.note}</p>}
       {invitation && !dinner.past && (
-        <RsvpPanel {...{ path, invitation, open, seated, waitlist }} person={actor.person} />
+        <RsvpPanel {...{ path, invitation, open, seated, waitlist }} person={actor.person} hosting={dinner.host_id === actor.person.id} />
       )}
       <WhosComing {...{ seated, waitlist, invitees }} capacity={dinner.capacity} />
       {can(actor, "announce", dinner) && <a class="button" href={`${path}/send`}>Send invite</a>}

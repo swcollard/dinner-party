@@ -2,7 +2,7 @@ import { type Context, Hono } from "hono";
 import { z } from "zod";
 import { can } from "../auth/permissions";
 import { personalToken, rememberPerson } from "../auth/session";
-import { addMember, findActivePerson, listMembers, reissueLink, removeMember, setOrganizer } from "../db/people";
+import { addMember, findActivePerson, getSettings, listMembers, reissueLink, removeMember, setOrganizer } from "../db/people";
 import { normalizePhone, smsUri } from "../domain/messages";
 import type { AppEnv } from "../types";
 import { Field, Layout } from "../views/layout";
@@ -78,7 +78,9 @@ members.post("/", async (c) => {
   const form = await readForm(c, memberForm);
   const phone = form.success && normalizePhone(form.data.phone);
   if (!form.success || !phone) return problem(c, "Enter a name and a full phone number.", "/members");
-  await addMember(c.env.DB, form.data.name, phone);
+  const settings = await getSettings(c.env.DB);
+  if (!settings) return neutral(c);
+  await addMember(c.env.DB, form.data.name, phone, settings.time_zone);
   return c.redirect("/members", 303);
 });
 

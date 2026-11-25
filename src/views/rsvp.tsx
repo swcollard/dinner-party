@@ -18,16 +18,19 @@ export function RsvpPanel(props: {
   person: Person;
   invitation: Invitation;
   open: boolean;
+  hosting: boolean;
   seated: Attendee[];
   waitlist: Attendee[];
 }) {
-  const { path, person, invitation, open, seated, waitlist } = props;
+  const { path, person, invitation, open, hosting, seated, waitlist } = props;
+  // A host who somehow isn't a yes still needs a way to become one.
+  const choices = hosting ? CHOICES.filter(({ value }) => value === "yes" && invitation.rsvp !== "yes") : CHOICES;
   const mine = (a: Attendee) => a.invitation_id === invitation.id;
   const place = waitlist.findIndex((a) => a.person_id === person.id) + 1;
   const plusOnes = [...seated, ...waitlist].filter((a) => mine(a) && a.person_id === null);
   return (
     <section>
-      <h2>Are you coming?</h2>
+      <h2>{hosting ? "You're hosting" : "Are you coming?"}</h2>
       <p role="status">
         {place > 0
           ? `You're number ${place} on the waitlist.`
@@ -35,9 +38,10 @@ export function RsvpPanel(props: {
             ? REPLIES[invitation.rsvp]
             : "You haven't replied yet."}
       </p>
-      {open ? (
+      {!open && <p>Replies are closed.</p>}
+      {open && choices.length > 0 && (
         <form method="post" action={`${path}/rsvp`} class="choices">
-          {CHOICES.map(({ value, label }) => (
+          {choices.map(({ value, label }) => (
             <button
               name="rsvp"
               value={value}
@@ -48,8 +52,6 @@ export function RsvpPanel(props: {
             </button>
           ))}
         </form>
-      ) : (
-        <p>Replies are closed.</p>
       )}
       {invitation.rsvp === "yes" && person.kind === "member" && (
         <>

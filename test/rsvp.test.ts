@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { setRsvp } from "../src/db/rsvps";
 import { assignSeats } from "../src/domain/seats";
+import { localDay, localToUtc } from "../src/domain/time";
 import type { Invitation } from "../src/types";
 import { bindings, Browser, links, seed } from "./helpers";
 
@@ -72,6 +73,45 @@ describe("rsvp", () => {
     expect(await reply()).toBe(409);
     await bindings.DB.prepare("UPDATE dinners SET status = 'confirmed', starts_at = 0").run();
     expect(await reply()).toBe(404);
+  });
+  it("keeps the host coming, but still lets them bring someone", async () => {
+    const { ana, bo, dinner } = await seed();
+    for (const rsvp of ["no", "maybe"]) expect((await ana.post(`${dinner}/rsvp`, { rsvp })).status).toBe(409);
+    expect((await ana.post(`${dinner}/plus-ones`, { name: "Cy" })).status).toBe(303);
+    const { body } = await ana.get(dinner);
+    expect(body).toContain("You&#39;re hosting");
+    expect(body).not.toContain('name="rsvp"');
+    expect(line(body, "Coming")).toBe("Ana, Cy (with Ana)");
+    expect((await bo.get(dinner)).body).toContain('name="rsvp"');
+  });
+  it("lets a host without a reply say yes", async () => {
+    const { ana, dinner } = await seed();
+    await bindings.DB.batch([
+      bindings.DB.prepare("UPDATE invitations SET rsvp = NULL"),
+      bindings.DB.prepare("DELETE FROM attendees"),
+    ]);
+    const { body } = await ana.get(dinner);
+    expect(body).toContain('value="yes"');
+    expect(body).not.toContain('value="no"');
+    await ana.post(`${dinner}/rsvp`, { rsvp: "yes" });
+    expect(line((await ana.get(dinner)).body, "Coming")).toBe("Ana");
+  });
+  it("invites a new member to today's and cancelled dinners, but not past ones", async () => {
+    const { sam } = await seed();
+    const invited = async (name: string) =>
+      (await bindings.DB.prepare("SELECT i.public_id FROM invitations i JOIN people p ON p.id = i.person_id WHERE p.name = ?")
+        .bind(name).all<{ public_id: string }>()).results;
+    // Already started, but the local day isn't over.
+    const midnight = localToUtc(`${localDay(Date.now(), "America/Chicago")}T00:00`, "America/Chicago")!;
+    await bindings.DB.prepare("UPDATE dinners SET starts_at = ?").bind(midnight).run();
+    await sam.post("/members", { name: "Dee", phone: "5125550104" });
+    expect((await invited("Dee"))[0]!.public_id).toMatch(/^[\w-]{22}$/);
+    await bindings.DB.prepare("UPDATE dinners SET status = 'cancelled'").run();
+    await sam.post("/members", { name: "Eve", phone: "5125550105" });
+    expect(await invited("Eve")).toHaveLength(1);
+    await bindings.DB.prepare("UPDATE dinners SET starts_at = 0, status = 'confirmed'").run();
+    await sam.post("/members", { name: "Fay", phone: "5125550106" });
+    expect(await invited("Fay")).toHaveLength(0);
   });
   it("is refused to strangers", async () => {
     const { dinner } = await seed();

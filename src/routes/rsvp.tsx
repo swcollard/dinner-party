@@ -26,6 +26,9 @@ rsvp.post("/d/:id/rsvp", async (c) => {
   if (own instanceof Response) return own;
   const form = await readForm(c, rsvpForm);
   if (!form.success) return problem(c, "Choose yes, maybe or no.", own.path);
+  if (form.data.rsvp !== "yes" && own.dinner.host_id === own.actor.person.id) {
+    return problem(c, "You're hosting, so you're counted as coming.", own.path, 409);
+  }
   await setRsvp(c.env.DB, own.invitation, form.data.rsvp);
   return c.redirect(own.path, 303);
 });
