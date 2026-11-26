@@ -1,5 +1,7 @@
 # Local secrets for `npm run dev` (copy to .dev.vars, which is git-ignored).
-SETUP_SECRET=change-me
-# Signs every link. At least 32 characters: `openssl rand -hex 32`. Changing it revokes all links.
+# Both must be at least 32 characters: `openssl rand -hex 32`.
+# Lets the first person become organizer. Setup stays locked until it's long enough.
+SETUP_SECRET=
+# Signs every link. Changing it revokes all links.
 LINK_SECRET=
 PUBLIC_BASE_URL=http://localhost:8787

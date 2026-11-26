@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import { anonymousSummary, parseNeeds } from "../src/domain/diet";
 import { BASE, bindings, Browser, links, seed } from "./helpers";
 
-const section = (body: string) => /<h2>Dietary needs<\/h2>.*?<\/section>/s.exec(body)?.[0] ?? "";
+const section = (body: string) => /<h2>Dietary restrictions<\/h2>.*?<\/section>/s.exec(body)?.[0] ?? "";
 
 describe("needs", () => {
   it("keeps known choices and trimmed text only", () => {
     expect(parseNeeds(["allergen:eggs", "diet:eggs", "diet:vegan", "x", "other"], "  no cilantro ")).toEqual([
-      { kind: "allergen", label: "eggs" },
       { kind: "diet", label: "vegan" },
+      { kind: "allergen", label: "eggs" },
       { kind: "other", label: "no cilantro" },
     ]);
   });
@@ -31,7 +31,7 @@ describe("profile", () => {
     expect((await bo.request("/profile", { method: "POST", body, headers: { Origin: BASE } })).status).toBe(303);
     expect(section((await sam.get(dinner)).body)).toBe("");
     await bo.post(`${dinner}/rsvp`, { rsvp: "yes" });
-    expect(section((await sam.get(dinner)).body)).toContain("<strong>Bo:</strong> peanuts allergy, vegetarian");
+    expect(section((await sam.get(dinner)).body)).toContain("<strong>Bo:</strong> vegetarian, peanut allergy");
   });
   it("updates contact details and the text opt-out", async () => {
     const { bo } = await seed();

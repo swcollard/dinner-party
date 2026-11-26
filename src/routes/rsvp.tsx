@@ -4,10 +4,11 @@ import { addPlusOne, findOwnInvitation, removePlusOne, setRsvp, updatePlusOne } 
 import type { AppEnv } from "../types";
 import { neutral, problem, readForm } from "./http";
 import { loadDinner } from "./load";
+import { personName } from "./names";
 import { needFields, toNeeds } from "./needs";
 
 const rsvpForm = z.object({ rsvp: z.enum(["yes", "maybe", "no"]) });
-const plusOneForm = z.object({ name: z.string().trim().min(1).max(80), ...needFields });
+const plusOneForm = z.object({ name: personName, ...needFields });
 
 export const rsvp = new Hono<AppEnv>();
 

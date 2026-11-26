@@ -1,13 +1,14 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { can } from "../auth/permissions";
-import { forgetInvitation, forgetPerson, invitationToken } from "../auth/session";
+import { forgetInvitation, forgetPerson, invitationToken, ONE_DINNER_LINK_DAYS } from "../auth/session";
 import {
   addGuest,
   createDinner,
   listDinners,
   listInvitees,
   reissueInvitation,
+  removeGuest,
   setCancelled,
   updateDinner,
 } from "../db/dinners";
@@ -25,6 +26,7 @@ import { RsvpPanel, WhosComing } from "../views/rsvp";
 import { calendarEvent } from "./calendar";
 import { absoluteUrl, neutral, problem, readForm } from "./http";
 import { loadDinner } from "./load";
+import { personName } from "./names";
 
 const dinnerForm = z.object({
   title: z.string().trim().min(1).max(120),
@@ -39,7 +41,7 @@ const dinnerForm = z.object({
   confirmed: z.literal("1").optional(),
 });
 const newDinnerForm = dinnerForm.extend({ host: z.string().optional() });
-const guestForm = z.object({ name: z.string().trim().min(1).max(80), phone: z.string().trim() });
+const guestForm = z.object({ name: personName, phone: z.string().trim() });
 
 function DinnerFields(props: { dinner?: Dinner; timeZone?: string }) {
   const { dinner, timeZone } = props;
@@ -267,9 +269,9 @@ dinners.get("/d/:id", async (c) => {
       {!dinner.past && (
         <p>
           {can(actor, "profile.own", dinner) ? (
-            <a href={`${path}/diet`}>Set your dietary needs</a>
+            <a href={`${path}/diet`}>Set your dietary restrictions</a>
           ) : (
-            "To change your dietary needs, open your personal link."
+            "To change your dietary restrictions, open your personal link."
           )}
         </p>
       )}
@@ -325,7 +327,10 @@ dinners.get("/d/:id/send", async (c) => {
         <button type="button" class="secondary" data-copy={groupMessage} hidden>Copy</button>
       </div>
       <h2>One by one</h2>
-      <p>These links open only this dinner, already signed in as that person.</p>
+      <p>
+        These links open only this dinner, already signed in as that person. They stop working{" "}
+        {ONE_DINNER_LINK_DAYS} days after the dinner.
+      </p>
       <ul class="cards">
         {individual.map(({ person, link }) => (
           <li>
@@ -342,6 +347,12 @@ dinners.get("/d/:id/send", async (c) => {
               <form method="post" action={`${path}/invitations/${person.invitation.public_id}/reissue`}>
                 <button class="secondary">Replace link (old one stops working)</button>
               </form>
+              {person.kind === "guest" && (
+                <form method="post" action={`${path}/guests/${person.invitation.public_id}/remove`}>
+                  <p>Removing deletes their link, phone number and dietary restrictions.</p>
+                  <button class="danger">Remove {person.name} from this dinner</button>
+                </form>
+              )}
             </details>
           </li>
         ))}
@@ -365,6 +376,16 @@ dinners.post("/d/:id/guests", async (c) => {
   const phone = form.data.phone ? normalizePhone(form.data.phone) : null;
   if (form.data.phone && !phone) return problem(c, "That phone number doesn't look right.", back);
   await addGuest(c.env.DB, loaded.dinner.id, form.data.name, phone);
+  return c.redirect(back, 303);
+});
+
+dinners.post("/d/:id/guests/:invitation/remove", async (c) => {
+  const loaded = await loadDinner(c, c.req.param("id"), "announce");
+  if (!loaded) return neutral(c);
+  const back = `${loaded.path}/send`;
+  if (!(await removeGuest(c.env.DB, loaded.dinner.id, c.req.param("invitation")))) {
+    return problem(c, "That guest isn't on this dinner any more.", back, 404);
+  }
   return c.redirect(back, 303);
 });
 

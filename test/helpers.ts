@@ -38,7 +38,7 @@ export class Browser {
   }
 }
 
-export const setup = { secret: "test-setup-secret", group: "Supper", name: "Sam", phone: "", timeZone: "America/Chicago" };
+export const setup = { secret: "test-setup-secret-at-least-32-characters", group: "Supper", name: "Sam", phone: "", timeZone: "America/Chicago" };
 
 export async function links(browser: Browser, page: string, kind: "k" | "i"): Promise<string[]> {
   const { body } = await browser.get(page);

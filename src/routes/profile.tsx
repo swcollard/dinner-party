@@ -8,10 +8,11 @@ import { NeedFields } from "../views/diet";
 import { Field, Layout } from "../views/layout";
 import { neutral, problem, readForm } from "./http";
 import { loadDinner } from "./load";
+import { isNameTaken, NAME_TAKEN, personName } from "./names";
 import { needFields, needsForm, toNeeds } from "./needs";
 
 const profileForm = z.object({
-  name: z.string().trim().min(1).max(80),
+  name: personName,
   phone: z.string().trim(),
   textsOptOut: z.literal("on").optional(),
   ...needFields,
@@ -26,7 +27,7 @@ profile.get("/profile", async (c) => {
   return c.html(
     <Layout title="Your profile" actor={actor}>
       <h1>Your profile</h1>
-      <p>Dietary needs are shared with the group for every dinner you're coming to.</p>
+      <p>Dietary restrictions are shared with the group for every dinner you're coming to.</p>
       <form method="post" action="/profile" class="stack">
         <Field label="Name" name="name" value={person.name} required autocomplete="name" />
         <Field label="Phone" name="phone" type="tel" value={person.phone ?? ""} autocomplete="tel" />
@@ -47,12 +48,17 @@ profile.post("/profile", async (c) => {
   if (!form.success) return problem(c, "Enter your name.", "/profile");
   const phone = form.data.phone ? normalizePhone(form.data.phone) : null;
   if (form.data.phone && !phone) return problem(c, "That phone number doesn't look right.", "/profile");
-  await saveProfile(
-    c.env.DB,
-    actor.person.id,
-    { name: form.data.name, phone, textsOptOut: !!form.data.textsOptOut },
-    toNeeds(form.data),
-  );
+  try {
+    await saveProfile(
+      c.env.DB,
+      actor.person.id,
+      { name: form.data.name, phone, textsOptOut: !!form.data.textsOptOut },
+      toNeeds(form.data),
+    );
+  } catch (error) {
+    if (isNameTaken(error)) return problem(c, NAME_TAKEN, "/profile", 409);
+    throw error;
+  }
   return c.redirect("/", 303);
 });
 
@@ -63,8 +69,8 @@ profile.get("/d/:id/diet", async (c) => {
   if (!loaded) return neutral(c);
   const { actor, dinner, path } = loaded;
   return c.html(
-    <Layout title="Your dietary needs" actor={actor} forgetPath={`${path}/forget`}>
-      <h1>Your dietary needs</h1>
+    <Layout title="Your dietary restrictions" actor={actor} forgetPath={`${path}/forget`}>
+      <h1>Your dietary restrictions</h1>
       <p><a href={path}>Back to {dinner.title}</a></p>
       <form method="post" action={`${path}/diet`} class="stack">
         <NeedFields needs={await listNeeds(c.env.DB, actor.person.id)} />

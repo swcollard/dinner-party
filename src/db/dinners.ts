@@ -120,17 +120,43 @@ export async function listInvitees(db: D1Database, dinnerId: number): Promise<In
 export async function findInvitation(
   db: D1Database,
   publicId: string,
-): Promise<{ invitation: Invitation; person: Person; dinnerPublicId: string } | null> {
+): Promise<{ invitation: Invitation; person: Person; dinnerPublicId: string; dinnerStartsAt: number | null } | null> {
   const invitation = await db
-    .prepare("SELECT i.*, d.public_id AS dinner_public_id FROM invitations i JOIN dinners d ON d.id = i.dinner_id WHERE i.public_id = ?")
+    .prepare(
+      `SELECT i.*, d.public_id AS dinner_public_id, d.starts_at AS dinner_starts_at
+       FROM invitations i JOIN dinners d ON d.id = i.dinner_id WHERE i.public_id = ?`,
+    )
     .bind(publicId)
-    .first<Invitation & { dinner_public_id: string }>();
+    .first<Invitation & { dinner_public_id: string; dinner_starts_at: number | null }>();
   if (!invitation) return null;
   const person = await db
     .prepare("SELECT * FROM people WHERE id = ? AND removed_at IS NULL")
     .bind(invitation.person_id)
     .first<Person>();
-  return person && { invitation, person, dinnerPublicId: invitation.dinner_public_id };
+  return person && {
+    invitation,
+    person,
+    dinnerPublicId: invitation.dinner_public_id,
+    dinnerStartsAt: invitation.dinner_starts_at,
+  };
+}
+
+/** Takes a guest off a dinner: their link stops working, and their phone number, needs and seat are deleted. */
+export async function removeGuest(db: D1Database, dinnerId: number, invitationPublicId: string): Promise<boolean> {
+  const guestInvitation = `SELECT i.id FROM invitations i JOIN people p ON p.id = i.person_id
+    WHERE i.dinner_id = ?1 AND i.public_id = ?2 AND p.kind = 'guest'`;
+  const guest = `SELECT person_id FROM invitations WHERE id IN (${guestInvitation})`;
+  const [removed] = await db.batch([
+    db
+      .prepare(
+        `UPDATE people SET removed_at = ?3, phone = NULL, link_version = link_version + 1
+         WHERE removed_at IS NULL AND id IN (${guest})`,
+      )
+      .bind(dinnerId, invitationPublicId, Date.now()),
+    db.prepare(`DELETE FROM dietary_needs WHERE person_id IN (${guest})`).bind(dinnerId, invitationPublicId),
+    db.prepare(`DELETE FROM attendees WHERE invitation_id IN (${guestInvitation})`).bind(dinnerId, invitationPublicId),
+  ]);
+  return removed!.meta.changes > 0;
 }
 
 export async function reissueInvitation(db: D1Database, dinnerId: number, publicId: string): Promise<void> {

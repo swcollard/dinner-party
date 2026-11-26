@@ -84,7 +84,7 @@ export function RsvpPanel(props: {
               <form method="post" action={`${path}/plus-ones`} class="stack">
                 <Field label="Their name" name="name" required />
                 <details>
-                  <summary>Dietary needs (optional)</summary>
+                  <summary>Dietary restrictions (optional)</summary>
                   <NeedFields needs={[]} />
                 </details>
                 <button>Add plus-one</button>

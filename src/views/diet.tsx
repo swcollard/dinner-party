@@ -1,40 +1,31 @@
 import type { Attendee } from "../db/rsvps";
-import { ALLERGENS, DIETS, type Need, anonymousSummary, describeNeed } from "../domain/diet";
-
-function Choices(props: { legend: string; kind: Need["kind"]; labels: string[]; needs: Need[] }) {
-  return (
-    <fieldset>
-      <legend>{props.legend}</legend>
-      <div class="checks">
-        {props.labels.map((label) => (
-          <label class="check">
-            <input
-              type="checkbox"
-              name="need"
-              value={`${props.kind}:${label}`}
-              checked={props.needs.some((n) => n.kind === props.kind && n.label === label)}
-            />
-            {label}
-          </label>
-        ))}
-      </div>
-    </fieldset>
-  );
-}
+import { type Need, RESTRICTIONS, anonymousSummary, describeNeed } from "../domain/diet";
 
 export function NeedFields(props: { needs: Need[] }) {
   const other = props.needs.find((n) => n.kind === "other")?.label;
   return (
-    <>
-      <Choices legend="Allergies" kind="allergen" labels={ALLERGENS} needs={props.needs} />
-      <Choices legend="Diet" kind="diet" labels={DIETS} needs={props.needs} />
+    <fieldset>
+      <legend>Dietary restrictions</legend>
+      <div class="checks">
+        {RESTRICTIONS.map((need) => (
+          <label class="check">
+            <input
+              type="checkbox"
+              name="need"
+              value={`${need.kind}:${need.label}`}
+              checked={props.needs.some((n) => n.kind === need.kind && n.label === need.label)}
+            />
+            {describeNeed(need)}
+          </label>
+        ))}
+      </div>
       <div class="other">
         <label class="check">
           <input type="checkbox" name="need" value="other" checked={other !== undefined} /> Other
         </label>
-        <input name="other" aria-label="Other dietary needs" placeholder="Describe it" maxlength={200} value={other} />
+        <input name="other" aria-label="Other dietary restrictions" placeholder="Describe it" maxlength={200} value={other} />
       </div>
-    </>
+    </fieldset>
   );
 }
 
@@ -44,7 +35,7 @@ export function DietSummary(props: { attendees: (Attendee & { needs: Need[]; wai
   if (withNeeds.length === 0) return null;
   return (
     <section>
-      <h2>Dietary needs</h2>
+      <h2>Dietary restrictions</h2>
       {props.showNames ? (
         <ul>
           {withNeeds.map((a) => (
