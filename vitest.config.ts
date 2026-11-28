@@ -8,7 +8,7 @@ export default defineConfig({
       wrangler: { configPath: "./wrangler.jsonc" },
       miniflare: {
         bindings: {
-          SETUP_SECRET: "test-setup-secret-at-least-32-characters",
+          SETUP_SECRET: "unit-test-setup-secret-for-vitest",
           LINK_SECRET: "test-link-secret-at-least-32-characters",
           PUBLIC_BASE_URL: "https://dinner.test",
           TEST_MIGRATIONS: await readD1Migrations("./migrations"),

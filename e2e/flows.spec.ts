@@ -29,7 +29,7 @@ test.beforeAll(async ({ browser }) => {
   organizer = await (await browser.newContext()).newPage();
   await organizer.goto("/setup");
   await expectGoodPage(organizer);
-  await organizer.getByLabel("Setup secret").fill("e2e-setup-secret-at-least-32-characters");
+  await organizer.getByLabel("Setup secret").fill("end-to-end-browser-testing-setup-secret");
   await organizer.getByLabel("Group name").fill("Supper Club");
   await organizer.getByLabel("Your name").fill("Sam");
   await organizer.getByRole("button", { name: "Create group" }).click();

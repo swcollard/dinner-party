@@ -13,7 +13,7 @@ export default defineConfig({
       // Not rm -rf, so this also runs on Windows.
       `node -e "require('fs').rmSync('.wrangler/e2e', { recursive: true, force: true })"`,
       `npx wrangler d1 migrations apply DB --local ${state}`,
-      `npx wrangler dev --port 8798 ${state} --var SETUP_SECRET:e2e-setup-secret-at-least-32-characters --var LINK_SECRET:e2e-link-secret-at-least-32-characters --var PUBLIC_BASE_URL:${url}`,
+      `npx wrangler dev --port 8798 ${state} --var SETUP_SECRET:end-to-end-browser-testing-setup-secret --var LINK_SECRET:e2e-link-secret-at-least-32-characters --var PUBLIC_BASE_URL:${url}`,
     ].join(" && "),
     url: `${url}/styles.css`,
     timeout: 60_000,
