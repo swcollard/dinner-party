@@ -1,0 +1,1911 @@
+openapi: 3.1.0
+
+info:
+  title: Dinner Club
+  version: 0.1.0
+  summary: One friend group planning dinner parties, with no accounts and no passwords.
+  license:
+    name: MIT
+    identifier: MIT
+  description: |
+    ## Read this first: this is not a JSON API
+
+    Dinner Club is a **server-rendered web app** (Hono + JSX on Cloudflare Workers, D1/SQLite).
+    There is no JSON API. Concretely:
+
+    * **Reads** (`GET`) return `text/html` pages. The only non-HTML read is the `.ics` calendar file.
+    * **Writes** (`POST`) take `application/x-www-form-urlencoded` bodies (`multipart/form-data` is also
+      accepted by the parser) and almost always answer **`303 See Other`** to the page to show next.
+    * **Validation or rule failures** return an HTML "Something needs fixing" page with a 4xx status.
+
+    So the value of this document is in two places: the **operations** (what can be called, by whom, and
+    what changes) and the **`components.schemas` domain model** (the objects those operations read and
+    write). The schemas describe the model, not response bodies; no endpoint returns them as JSON.
+    `DinnerPage` is the one "read model" that shows what a dinner page assembles from several objects.
+
+    ### Extensions used on operations
+
+    | Extension | Meaning |
+    | --- | --- |
+    | `x-permission` | The `Action` that `can()` in `src/auth/permissions.ts` checks (see *Roles and permissions*). |
+    | `x-reads` | Schemas whose data the page shows or the handler loads. |
+    | `x-writes` | Schemas the handler creates, updates or deletes. |
+
+    ### Object model
+
+    ```
+    GroupSettings (exactly one row)
+    Person (kind: member | guest)  ──<  DietaryNeed
+      │ hosts
+      ▼
+    Dinner  ──<  Invitation  (one per person invited; holds the RSVP and the one-dinner link version)
+      │               └──<  Attendee  (one per SEAT wanted: the person themself, or a named plus-one)
+      │
+      ├──<  PollOption ──< PollVote                          planned
+      ├──<  Course ──< Slot ──0..1 Dish ──< dish tag        planned
+      ├──<  Announcement                                     planned
+      └──<  Notice (per person)                              planned
+    Season ──< SeasonHost (ordered)  ──>  Dinner             planned
+    Recipe  <──  Dish                                         planned
+    ```
+
+    Schemas marked `x-status: planned` have tables in `migrations/0001_init.sql` but **no endpoints yet**.
+    `Dinner.status` values `planning` and `polling` are likewise reserved: every dinner is created
+    `confirmed`, and the only transitions are `confirmed` ⇄ `cancelled`.
+
+    Conventions in the schemas:
+
+    * Clients never see internal integer ids. Foreign keys are shown as references by **`public_id`**
+      (a 22-character base64url string), e.g. `Dinner.host` is a `Person.public_id`. The one exception is
+      `Attendee.id`, which appears in plus-one URLs.
+    * Timestamps (`starts_at`, `queued_at`, `replied_at`, `removed_at`, ...) are **UTC milliseconds**.
+      Forms use local `datetime-local` text in the group's `time_zone`, converted on the server.
+    * SQLite stores booleans as `0`/`1`; the schemas use `boolean`.
+
+    ## Identity: personal links, no accounts
+
+    Nobody signs in. A **link is the only credential**, and it is derived (HMAC-SHA256 over a secret,
+    `LINK_SECRET`), not stored, so it can be shown again later. Token format:
+    `{publicId}.{version}.{signature}`.
+
+    | Link | URL | Who | Reach | Revoked by |
+    | --- | --- | --- | --- | --- |
+    | Personal link | `/k/{token}` | Members only | Everything the member may do | Reissue (`Person.link_version`) |
+    | One-dinner link | `/i/{token}` | Members and guests | One dinner, as that person, and **never** the member's wider powers | Reissue (`Invitation.link_version`), member revocation, guest removal, or **7 days after the dinner** |
+
+    Opening a link sets an HttpOnly, SameSite=Lax cookie: `dc` (personal) or `dc_{dinnerPublicId}`
+    (one-dinner; one cookie per dinner). Over HTTPS both get a `__Host-` prefix. Personal cookies last
+    ~400 days; one-dinner cookies last only as long as the link works. On `/d/{id}/...` pages a one-dinner
+    cookie for a *different* person overrides the personal cookie.
+
+    **A browser that already knows someone else is asked before switching.** `GET /k/{token}` and
+    `GET /i/{token}` change nothing in that case (link-preview bots fetch them); the confirmation page
+    posts to the same URL.
+
+    ## Cross-cutting behaviour
+
+    * **Strangers and unauthorised callers get the same page.** Missing identity, missing permission,
+      unknown dinner, expired or tampered link, `/setup` after setup: all return the *identical*
+      `404` "Open your personal link" page, so nothing about the group leaks. Treat `404` as
+      "not found *or* not allowed". A few handlers return distinct 4xx pages once the caller is known to
+      be a legitimate member (`400`, `403`, `404`, `409`); those are documented per operation.
+    * **CSRF:** every non-`GET`/`HEAD` request must carry an `Origin` header whose host matches the
+      request host or `PUBLIC_BASE_URL`; otherwise `403` `Cross-site request blocked` (plain text).
+      This is not repeated on each operation unless it is the only `403`.
+    * **Response headers on every response:** `Cache-Control: no-store`, `Referrer-Policy: same-origin`,
+      `X-Robots-Tag: noindex, nofollow`, `X-Content-Type-Options: nosniff`, and a strict
+      `Content-Security-Policy` (`default-src 'self'`, `frame-ancestors 'none'`, `form-action 'self'`).
+    * **Past dinners are read-only** to everyone except organizers. A dinner is past once its local day
+      (in the group's time zone) is over.
+
+    ## Roles and permissions
+
+    Roles are per dinner: a *host* is whoever `Dinner.host` points to. Organizers
+    (`Person.is_organizer`) can do everything, including on past dinners. The table covers the actions
+    that have endpoints today.
+
+    | `x-permission` | Member | Host of that dinner | Organizer | One-dinner link |
+    | --- | --- | --- | --- | --- |
+    | `dinner.view` | yes | yes | yes | this dinner only (also when past) |
+    | `dinner.create` | yes | yes | yes | no |
+    | `dinner.chooseHost` | no | no | yes | no |
+    | `dinner.edit` (edit, cancel, restore) | no | yes | yes | no |
+    | `announce` (send page, guests, link reissue) | no | yes | yes | no |
+    | `rsvp.own` | yes | yes | yes | yes |
+    | `profile.own` | yes (`/profile`, `/d/{id}/diet`) | same | same | **guests only**, on `/d/{id}/diet` |
+    | `members.manage` | no | no | yes | no |
+
+    Except `dinner.view`, all of the above are **organizer-only once a dinner is past**.
+
+    > **Differs from the PRD.** `docs/prd.md` says only hosts and organizers create dinners. The code lets
+    > **any member** create one and become its host (see the comment in `permissions.ts`); only organizers
+    > may choose someone else as host.
+    >
+    > Defined in `permissions.ts` but with **no endpoint yet**: `poll.vote`, `poll.confirm`, `menu.edit`,
+    > `dish.own`, `dish.assign`, `dish.any`, `seasons.manage`.
+
+    ## Privacy rules worth knowing
+
+    * Phone numbers are shown on the organizer's Members page and are embedded in the `sms:` links on a
+      host's *Send invite* page. They are deleted when a member or guest is removed.
+    * Members see dietary needs by name. **Guests** see only an anonymous summary, and only for people
+      holding a seat.
+    * Removing a member keeps their name (so history reads correctly) and deletes their phone, needs
+      and their plus-ones' needs.
+
+servers:
+  - url: http://localhost:8787
+    description: Local `npm run dev` (wrangler)
+  - url: "{publicBaseUrl}"
+    description: Deployed Worker. Must equal the `PUBLIC_BASE_URL` binding.
+    variables:
+      publicBaseUrl:
+        default: https://dinner-club.example.workers.dev
+
+tags:
+  - name: Setup and access
+    description: First-run setup, opening and forgetting links.
+  - name: Dinners
+    description: Listing, creating, editing, cancelling and viewing dinners.
+  - name: RSVP
+    description: Replies and plus-ones. Seats are first come, first seated.
+  - name: Invitations and guests
+    description: The host's Send invite page, guests, and one-dinner links.
+  - name: Profile and dietary needs
+    description: A person's name, phone, text opt-out and dietary needs.
+  - name: Members
+    description: Organizer-only group management.
+  - name: Calendar
+    description: Calendar export.
+  - name: Static
+    description: Assets served from `public/`.
+
+security:
+  - personalLink: []
+  - dinnerLink: []
+
+paths:
+  # ------------------------------------------------------------------ setup and access
+  /setup:
+    get:
+      tags: [Setup and access]
+      operationId: showSetup
+      summary: First-run setup form
+      description: |
+        Available only until the group exists. Locked (`503`) unless `SETUP_SECRET` is at least 32
+        characters, because guessing it makes someone the first organizer.
+      security: []
+      x-reads: [GroupSettings]
+      responses:
+        '200':
+          $ref: '#/components/responses/Html'
+        '404':
+          $ref: '#/components/responses/Neutral'
+          description: The group already exists.
+        '503':
+          $ref: '#/components/responses/Html'
+          description: '`SETUP_SECRET` is shorter than 32 characters; the page explains how to set one.'
+    post:
+      tags: [Setup and access]
+      operationId: createGroup
+      summary: Create the group and its first organizer
+      description: |
+        Creates the single `GroupSettings` row (with the default course list) and the first `Person`
+        (a member and organizer), then signs this browser in as them. Simultaneous setups are safe: only
+        one wins.
+      security: []
+      x-writes: [GroupSettings, Person]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SetupForm'
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Created. Redirects to `/members` and sets the personal cookie.
+        '400':
+          $ref: '#/components/responses/Problem'
+          description: A field is missing, the time zone is not a valid IANA zone, or the phone number is not valid.
+        '403':
+          $ref: '#/components/responses/Problem'
+          description: Wrong setup secret (HTML), or the cross-site check failed (plain text).
+        '404':
+          $ref: '#/components/responses/Neutral'
+          description: The group already exists.
+        '503':
+          $ref: '#/components/responses/Html'
+          description: Setup is locked.
+
+  /k/{token}:
+    parameters:
+      - $ref: '#/components/parameters/LinkToken'
+    get:
+      tags: [Setup and access]
+      operationId: openPersonalLink
+      summary: Open a personal link
+      description: |
+        Signs the browser in as the member. Safe for link previews: it sets a cookie only for a browser
+        that knows nobody else, and never changes data.
+      security: []
+      x-reads: [Person]
+      responses:
+        '200':
+          $ref: '#/components/responses/Html'
+          description: |
+            This browser already knows a different person. Shows "Continue as {name}?" and changes
+            nothing; the form posts to this same URL.
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Signed in (sets the personal cookie). Redirects to `/`.
+        '404':
+          $ref: '#/components/responses/Neutral'
+          description: Token is invalid, altered, revoked, or the person was removed.
+    post:
+      tags: [Setup and access]
+      operationId: confirmPersonalLink
+      summary: Confirm switching to this personal link
+      description: Sets the personal cookie, replacing any other person this browser knew.
+      security: []
+      x-reads: [Person]
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Redirects to `/`.
+        '403':
+          $ref: '#/components/responses/CrossSite'
+        '404':
+          $ref: '#/components/responses/Neutral'
+
+  /i/{token}:
+    parameters:
+      - $ref: '#/components/parameters/LinkToken'
+    get:
+      tags: [Setup and access]
+      operationId: openOneDinnerLink
+      summary: Open a one-dinner link
+      description: |
+        Signs the browser in **for one dinner** as the invited person (member or guest). The cookie is
+        per dinner and lasts only until the link expires (7 days after the dinner; a dinner without a
+        date never expires).
+      security: []
+      x-reads: [Invitation, Person]
+      responses:
+        '200':
+          $ref: '#/components/responses/Html'
+          description: This browser already acts as someone else on that dinner; asks before switching.
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Redirects to `/d/{dinnerPublicId}`.
+        '404':
+          $ref: '#/components/responses/Neutral'
+          description: Invalid, altered, expired or revoked link, or the guest or member was removed.
+    post:
+      tags: [Setup and access]
+      operationId: confirmOneDinnerLink
+      summary: Confirm switching to this one-dinner link
+      security: []
+      x-reads: [Invitation, Person]
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Redirects to `/d/{dinnerPublicId}`.
+        '403':
+          $ref: '#/components/responses/CrossSite'
+        '404':
+          $ref: '#/components/responses/Neutral'
+
+  /forget:
+    post:
+      tags: [Setup and access]
+      operationId: forgetPerson
+      summary: "\"Not you?\": clear the personal cookie"
+      description: |
+        Always clears the personal cookie. The response is the neutral page, with status `404` like every
+        other "I don't know you" page.
+      security: []
+      responses:
+        '403':
+          $ref: '#/components/responses/CrossSite'
+        '404':
+          $ref: '#/components/responses/Neutral'
+          description: Cookie cleared; shows the neutral "Open your personal link" page.
+
+  # ------------------------------------------------------------------ dinners
+  /:
+    get:
+      tags: [Dinners]
+      operationId: listDinners
+      summary: Upcoming dinners
+      description: |
+        Home page. Lists every dinner that is not past (including cancelled ones, marked), earliest first
+        and undated last, with a link to create one and, for organizers, to Members. There is no
+        pagination. Any signed-in member may open it (there is no per-dinner check on this page).
+      x-reads: [GroupSettings, Dinner, Person]
+      responses:
+        '200':
+          $ref: '#/components/responses/Html'
+        '404':
+          $ref: '#/components/responses/Neutral'
+
+  /new:
+    get:
+      tags: [Dinners]
+      operationId: showNewDinner
+      summary: New dinner form
+      description: |
+        Organizers get a host picker listing all members; everyone else can only host themself.
+      x-permission: dinner.create
+      x-reads: [Person]
+      responses:
+        '200':
+          $ref: '#/components/responses/Html'
+        '404':
+          $ref: '#/components/responses/Neutral'
+    post:
+      tags: [Dinners]
+      operationId: createDinner
+      summary: Create a dinner
+      description: |
+        Creates a **`confirmed`** dinner and, in one transaction:
+
+        1. creates an `Invitation` for **every current member**;
+        2. marks the host's invitation `yes`;
+        3. gives the host a seat (`Attendee`).
+
+        There is no draft or poll mode yet. A start date earlier than today (group time zone) is rejected
+        for everyone, organizers included.
+      x-permission: dinner.create
+      x-reads: [GroupSettings, Person]
+      x-writes: [Dinner, Invitation, Attendee]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/NewDinnerForm'
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Created. Redirects to `/d/{id}` of the new dinner.
+        '400':
+          $ref: '#/components/responses/Problem'
+          description: Missing title or date, seats not a whole number, date in the past, or `host` is not a current member.
+        '403':
+          $ref: '#/components/responses/Problem'
+          description: A non-organizer tried to choose someone else as host (HTML), or the cross-site check failed (plain text).
+        '404':
+          $ref: '#/components/responses/Neutral'
+
+  /d/{id}:
+    parameters:
+      - $ref: '#/components/parameters/DinnerId'
+    get:
+      tags: [Dinners]
+      operationId: showDinner
+      summary: The dinner page
+      description: |
+        The single page per dinner. Assembles a `DinnerPage`: details, the viewer's RSVP panel (only if
+        they hold an invitation and the dinner is not past), who is coming and waiting, replies, a
+        dietary summary, calendar links (confirmed and not past), and links to Send invite and Edit
+        for those allowed.
+
+        Works for a cancelled dinner (shows a banner) and for past dinners (read-only). Reachable with a
+        personal cookie or that dinner's one-dinner cookie.
+      x-permission: dinner.view
+      x-reads: [DinnerPage, Dinner, Invitation, Attendee, DietaryNeed]
+      responses:
+        '200':
+          $ref: '#/components/responses/Html'
+        '404':
+          $ref: '#/components/responses/Neutral'
+
+  /d/{id}/edit:
+    parameters:
+      - $ref: '#/components/parameters/DinnerId'
+    get:
+      tags: [Dinners]
+      operationId: showEditDinner
+      summary: Edit dinner form
+      description: Includes the "Close replies" checkbox and the cancel / bring-back button.
+      x-permission: dinner.edit
+      x-reads: [Dinner, GroupSettings]
+      responses:
+        '200':
+          $ref: '#/components/responses/Html'
+        '404':
+          $ref: '#/components/responses/Neutral'
+    post:
+      tags: [Dinners]
+      operationId: updateDinner
+      summary: Save changes to a dinner
+      description: |
+        Replaces title, start, location, note, capacity and the replies-closed flag.
+
+        **Two-step when seats shrink.** If the new `capacity` is below the number of people currently
+        seated, nobody is moved yet: the response is a `200` page listing who would move to the waitlist,
+        which re-posts the same fields with `confirmed=1`. The waitlist itself is never stored; seating is
+        recomputed from `Attendee.queued_at`, so lowering or raising capacity just changes the cut.
+
+        A past start date is accepted only from an organizer (so a host cannot lock themself out).
+        Editing sends no notices yet (`TODO(milestone 5)` in the source).
+      x-permission: dinner.edit
+      x-reads: [Dinner, Attendee, GroupSettings]
+      x-writes: [Dinner]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/EditDinnerForm'
+      responses:
+        '200':
+          $ref: '#/components/responses/Html'
+          description: '"Move N to the waitlist?" confirmation. Nothing was saved.'
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Saved. Redirects to `/d/{id}`.
+        '400':
+          $ref: '#/components/responses/Problem'
+          description: Invalid fields, or the date is in the past and the caller is not an organizer.
+        '403':
+          $ref: '#/components/responses/CrossSite'
+        '404':
+          $ref: '#/components/responses/Neutral'
+
+  /d/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/DinnerId'
+    post:
+      tags: [Dinners]
+      operationId: cancelDinner
+      summary: Cancel a dinner
+      description: |
+        `confirmed` → `cancelled`. Replies are kept and the dinner can be restored. Does nothing (still
+        redirects) if it is not currently `confirmed`. Sends no notices yet. A cancelled dinner stops
+        accepting RSVPs and no longer offers calendar export.
+      x-permission: dinner.edit
+      x-writes: [Dinner]
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Redirects to `/d/{id}`.
+        '403':
+          $ref: '#/components/responses/CrossSite'
+        '404':
+          $ref: '#/components/responses/Neutral'
+
+  /d/{id}/restore:
+    parameters:
+      - $ref: '#/components/parameters/DinnerId'
+    post:
+      tags: [Dinners]
+      operationId: restoreDinner
+      summary: Bring a cancelled dinner back
+      description: '`cancelled` → `confirmed`. Does nothing (still redirects) if it is not currently `cancelled`.'
+      x-permission: dinner.edit
+      x-writes: [Dinner]
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Redirects to `/d/{id}`.
+        '403':
+          $ref: '#/components/responses/CrossSite'
+        '404':
+          $ref: '#/components/responses/Neutral'
+
+  /d/{id}/forget:
+    parameters:
+      - $ref: '#/components/parameters/DinnerId'
+    post:
+      tags: [Setup and access]
+      operationId: forgetOnDinner
+      summary: '"Not you?" on a dinner page'
+      description: |
+        Drops only the identity currently shown: the one-dinner cookie if the page was using one,
+        otherwise the personal cookie. A one-dinner link sits on top of the personal one, so forgetting it
+        reveals the personal identity again.
+      security: []
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Redirects to `/d/{id}`.
+        '403':
+          $ref: '#/components/responses/CrossSite'
+
+  # ------------------------------------------------------------------ rsvp
+  /d/{id}/rsvp:
+    parameters:
+      - $ref: '#/components/parameters/DinnerId'
+    post:
+      tags: [RSVP]
+      operationId: setRsvp
+      summary: Reply yes, maybe or no
+      description: |
+        Updates the caller's own `Invitation.rsvp` and `replied_at`, and manages their seat:
+
+        * **yes** adds the person's own `Attendee` seat at `queued_at = now`. Saying yes again keeps the
+          original place in line. Any plus-ones they had are restored right behind them.
+        * **maybe / no** delete the person's own seat (so they leave the line). Rejoining later with
+          *yes* goes to the **end** of the line. Plus-ones are hidden, not deleted, while the reply is
+          not *yes*.
+
+        Seating is computed, not stored (see `Attendee`). Replies work only while the dinner is
+        `confirmed` and the host has not closed replies.
+      x-permission: rsvp.own
+      x-reads: [Dinner, Invitation]
+      x-writes: [Invitation, Attendee]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RsvpForm'
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Saved. Redirects to `/d/{id}`.
+        '400':
+          $ref: '#/components/responses/Problem'
+          description: '`rsvp` is not yes, maybe or no.'
+        '403':
+          $ref: '#/components/responses/Problem'
+          description: The caller has no invitation to this dinner (HTML), or the cross-site check failed (plain text).
+        '404':
+          $ref: '#/components/responses/Neutral'
+        '409':
+          $ref: '#/components/responses/Problem'
+          description: The dinner is not `confirmed`, replies are closed, or the host tried to answer anything but yes.
+
+  /d/{id}/plus-ones:
+    parameters:
+      - $ref: '#/components/parameters/DinnerId'
+    post:
+      tags: [RSVP]
+      operationId: addPlusOne
+      summary: Bring a plus-one
+      description: |
+        Adds an `Attendee` seat with `plus_one_name` and its own dietary needs (stored on the attendee
+        row, not as a `Person`). Takes effect only if the caller's reply is **yes** and they have fewer
+        than **10** plus-ones. A plus-one counts toward capacity and queues at the time of adding, so
+        late additions can land on the waitlist. **Members only**: guests must ask the host.
+      x-permission: rsvp.own
+      x-reads: [Invitation]
+      x-writes: [Attendee]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PlusOneForm'
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Added. Redirects to `/d/{id}`.
+        '400':
+          $ref: '#/components/responses/Problem'
+          description: Name missing.
+        '403':
+          $ref: '#/components/responses/Problem'
+          description: Caller is a guest or has no invitation (HTML), or the cross-site check failed (plain text).
+        '404':
+          $ref: '#/components/responses/Neutral'
+        '409':
+          $ref: '#/components/responses/Problem'
+          description: The dinner is not taking replies, the caller has not said yes, or they already have 10 plus-ones.
+
+  /d/{id}/plus-ones/{attendee}/edit:
+    parameters:
+      - $ref: '#/components/parameters/DinnerId'
+      - $ref: '#/components/parameters/AttendeeId'
+    post:
+      tags: [RSVP]
+      operationId: editPlusOne
+      summary: Rename a plus-one or change their dietary needs
+      description: |
+        Edits in place, so the plus-one keeps their position in line. Scoped to the caller's own
+        invitation: an id belonging to someone else (or not a plus-one) matches nothing and the request
+        still redirects.
+      x-permission: rsvp.own
+      x-writes: [Attendee]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PlusOneForm'
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Redirects to `/d/{id}`.
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Neutral'
+        '409':
+          $ref: '#/components/responses/Problem'
+          description: The dinner is not taking replies.
+
+  /d/{id}/plus-ones/{attendee}/remove:
+    parameters:
+      - $ref: '#/components/parameters/DinnerId'
+      - $ref: '#/components/parameters/AttendeeId'
+    post:
+      tags: [RSVP]
+      operationId: removePlusOne
+      summary: Remove a plus-one
+      description: Deletes the plus-one's seat. Scoped to the caller's own invitation, like edit.
+      x-permission: rsvp.own
+      x-writes: [Attendee]
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Redirects to `/d/{id}`.
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Neutral'
+        '409':
+          $ref: '#/components/responses/Problem'
+          description: The dinner is not taking replies.
+
+  # ------------------------------------------------------------------ invitations and guests
+  /d/{id}/send:
+    parameters:
+      - $ref: '#/components/parameters/DinnerId'
+    get:
+      tags: [Invitations and guests]
+      operationId: showSendInvite
+      summary: Send invite page
+      description: |
+        The host's tool for getting people to the dinner. Shows:
+
+        * a **group message** with the dinner's plain `/d/{id}` link, with Share, WhatsApp, and (for
+          members with a phone who have not opted out) a multi-recipient text button;
+        * a **one-by-one** card per other invitee, each with their personal **one-dinner link**
+          (`/i/{token}`), a text button, "Replace link", and for guests "Remove";
+        * a form to add a guest.
+
+        The plain group link only works for people who already have a personal link (guests do not), which
+        is why guests get one-dinner links. **This page exposes working credentials and phone numbers**,
+        which is why it needs `announce`. Offered only for `confirmed` dinners on the dinner page, but the
+        route itself checks only the permission.
+      x-permission: announce
+      x-reads: [Dinner, Invitation, Person]
+      responses:
+        '200':
+          $ref: '#/components/responses/Html'
+        '404':
+          $ref: '#/components/responses/Neutral'
+
+  /d/{id}/guests:
+    parameters:
+      - $ref: '#/components/parameters/DinnerId'
+    post:
+      tags: [Invitations and guests]
+      operationId: addGuest
+      summary: Add a one-off guest to this dinner
+      description: |
+        Creates a `Person` with `kind = guest` and an `Invitation` for this dinner only. Guests have no
+        personal link and no account; they get a one-dinner link from the Send invite page.
+      x-permission: announce
+      x-writes: [Person, Invitation]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/GuestForm'
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Added. Redirects to `/d/{id}/send`.
+        '400':
+          $ref: '#/components/responses/Problem'
+          description: Name missing, or the phone number is not valid.
+        '403':
+          $ref: '#/components/responses/CrossSite'
+        '404':
+          $ref: '#/components/responses/Neutral'
+
+  /d/{id}/guests/{invitation}/remove:
+    parameters:
+      - $ref: '#/components/parameters/DinnerId'
+      - $ref: '#/components/parameters/InvitationId'
+    post:
+      tags: [Invitations and guests]
+      operationId: removeGuest
+      summary: Remove a guest from this dinner
+      description: |
+        Soft-removes the guest: sets `Person.removed_at`, clears their phone, bumps `link_version` (their
+        one-dinner link stops working), and deletes their dietary needs and seat. Members cannot be
+        removed this way.
+      x-permission: announce
+      x-writes: [Person, DietaryNeed, Attendee]
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Redirects to `/d/{id}/send`.
+        '403':
+          $ref: '#/components/responses/CrossSite'
+        '404':
+          $ref: '#/components/responses/Problem'
+          description: Not a guest on this dinner (HTML), or the caller may not announce here (neutral page).
+
+  /d/{id}/invitations/{invitation}/reissue:
+    parameters:
+      - $ref: '#/components/parameters/DinnerId'
+      - $ref: '#/components/parameters/InvitationId'
+    post:
+      tags: [Invitations and guests]
+      operationId: reissueInvitation
+      summary: Replace someone's one-dinner link
+      description: |
+        Bumps `Invitation.link_version`, so the old `/i/{token}` stops working and a new one appears on the
+        Send invite page. Redirects even if the invitation id matches nothing.
+      x-permission: announce
+      x-writes: [Invitation]
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Redirects to `/d/{id}/send`.
+        '403':
+          $ref: '#/components/responses/CrossSite'
+        '404':
+          $ref: '#/components/responses/Neutral'
+
+  # ------------------------------------------------------------------ profile and needs
+  /profile:
+    get:
+      tags: [Profile and dietary needs]
+      operationId: showProfile
+      summary: Your profile
+      description: |
+        Name, phone, text opt-out, and dietary needs, which apply to every dinner. **Personal link only**:
+        one-dinner links are refused here because they are visible to hosts.
+      x-permission: profile.own
+      x-reads: [Person, DietaryNeed]
+      responses:
+        '200':
+          $ref: '#/components/responses/Html'
+        '404':
+          $ref: '#/components/responses/Neutral'
+    post:
+      tags: [Profile and dietary needs]
+      operationId: saveProfile
+      summary: Save your profile
+      description: |
+        Updates the person's name, phone and `texts_opt_out`, and **replaces** their dietary needs with the
+        submitted set. Member names must stay unique ignoring case, so nobody can pass as someone else.
+      x-permission: profile.own
+      x-writes: [Person, DietaryNeed]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ProfileForm'
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Saved. Redirects to `/`.
+        '400':
+          $ref: '#/components/responses/Problem'
+          description: Name missing, or the phone number is not valid.
+        '403':
+          $ref: '#/components/responses/CrossSite'
+        '404':
+          $ref: '#/components/responses/Neutral'
+        '409':
+          $ref: '#/components/responses/Problem'
+          description: Another current member already has that name (ignoring case).
+
+  /d/{id}/diet:
+    parameters:
+      - $ref: '#/components/parameters/DinnerId'
+    get:
+      tags: [Profile and dietary needs]
+      operationId: showDinnerDiet
+      summary: Your dietary restrictions, from a dinner page
+      description: |
+        How **guests** set their needs, since they have no profile. Members may use it too, but not
+        through a one-dinner link. Needs are stored on the person and apply everywhere they appear.
+        Unavailable on past dinners (except for organizers).
+      x-permission: profile.own
+      x-reads: [DietaryNeed]
+      responses:
+        '200':
+          $ref: '#/components/responses/Html'
+        '404':
+          $ref: '#/components/responses/Neutral'
+    post:
+      tags: [Profile and dietary needs]
+      operationId: saveDinnerDiet
+      summary: Save your dietary restrictions
+      description: Replaces the caller's dietary needs with the submitted set.
+      x-permission: profile.own
+      x-writes: [DietaryNeed]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/NeedFields'
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Saved. Redirects to `/d/{id}`.
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/CrossSite'
+        '404':
+          $ref: '#/components/responses/Neutral'
+
+  # ------------------------------------------------------------------ calendar
+  /d/{id}/calendar.ics:
+    parameters:
+      - $ref: '#/components/parameters/DinnerId'
+    get:
+      tags: [Calendar]
+      operationId: downloadCalendarEvent
+      summary: Download an iCalendar event
+      description: |
+        A snapshot of the dinner as one `VEVENT` (UID `{dinnerPublicId}@dinner-club`, 3 hours long since
+        dinners have no end time). Only `confirmed` dinners with a date have one. The dinner page also
+        links to Google Calendar's "add event" URL, which is built client-side from the same data.
+        Calendar entries are **not updated** if the dinner later moves or is cancelled.
+      x-permission: dinner.view
+      x-reads: [Dinner]
+      responses:
+        '200':
+          description: The calendar file, sent as an attachment named `dinner.ics`.
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+                examples: ['attachment; filename="dinner.ics"']
+          content:
+            text/calendar:
+              schema:
+                type: string
+                examples:
+                  - "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n...\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        '404':
+          $ref: '#/components/responses/Neutral'
+          description: No access, or the dinner is cancelled, unconfirmed or undated.
+
+  # ------------------------------------------------------------------ members (organizer only)
+  /members:
+    get:
+      tags: [Members]
+      operationId: listMembers
+      summary: Members page
+      description: |
+        Every current member with their phone number, a signed **personal link** to copy or text, and
+        controls to replace the link, toggle organizer, or remove them. **This page exposes working
+        credentials for the whole group.**
+
+        All `/members` routes share one gate: strangers get the neutral `404`; signed-in non-organizers
+        get a `403` problem page.
+      x-permission: members.manage
+      x-reads: [Person]
+      responses:
+        '200':
+          $ref: '#/components/responses/Html'
+        '403':
+          $ref: '#/components/responses/Problem'
+          description: Signed in, but not an organizer.
+        '404':
+          $ref: '#/components/responses/Neutral'
+    post:
+      tags: [Members]
+      operationId: addMember
+      summary: Add a member
+      description: |
+        Creates a `Person` (`kind = member`) and an `Invitation` to **every dinner that is not past**
+        (cancelled ones included, since a host may bring them back), so a new member immediately appears
+        on upcoming guest lists. Phone is required and normalised to E.164 (ten digits are taken as
+        a US number). Nothing is texted: the organizer copies or texts the personal link themself.
+      x-permission: members.manage
+      x-reads: [GroupSettings, Dinner]
+      x-writes: [Person, Invitation]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/MemberForm'
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Added. Redirects to `/members`.
+        '400':
+          $ref: '#/components/responses/Problem'
+          description: Name missing or the phone number is not a full valid number.
+        '403':
+          $ref: '#/components/responses/Problem'
+          description: Not an organizer (HTML), or the cross-site check failed (plain text).
+        '404':
+          $ref: '#/components/responses/Neutral'
+        '409':
+          $ref: '#/components/responses/Problem'
+          description: A current member already has that name (ignoring case).
+
+  /members/{id}/reissue:
+    parameters:
+      - $ref: '#/components/parameters/PersonId'
+    post:
+      tags: [Members]
+      operationId: reissueMemberLink
+      summary: Replace a member's personal link
+      description: |
+        Bumps `Person.link_version`. The old `/k/{token}` link, that person's sessions, **and every
+        one-dinner link issued for them** stop working. If an organizer replaces their own link they stay
+        signed in (their cookie is refreshed).
+      x-permission: members.manage
+      x-writes: [Person]
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Redirects to `/members`.
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Neutral'
+
+  /members/{id}/organizer:
+    parameters:
+      - $ref: '#/components/parameters/PersonId'
+    post:
+      tags: [Members]
+      operationId: setOrganizer
+      summary: Make or remove an organizer
+      description: Refuses to leave the group with no organizer.
+      x-permission: members.manage
+      x-writes: [Person]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizerForm'
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Redirects to `/members`.
+        '400':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+          description: The person is not in the group any more (HTML), or the caller is a stranger (neutral page).
+        '409':
+          $ref: '#/components/responses/Problem'
+          description: This would leave the group without an organizer.
+
+  /members/{id}/remove:
+    parameters:
+      - $ref: '#/components/parameters/PersonId'
+    post:
+      tags: [Members]
+      operationId: removeMember
+      summary: Remove a member from the group
+      description: |
+        Soft-removes: sets `removed_at`, clears `is_organizer` and phone, bumps `link_version` (all their
+        links die), deletes their dietary needs and blanks their plus-ones' needs. The **name is kept** so
+        past dinners still read correctly, and their invitations and seats stay in the database (hidden from
+        lists and headcounts). Refuses to remove the last organizer.
+      x-permission: members.manage
+      x-writes: [Person, DietaryNeed, Attendee]
+      responses:
+        '303':
+          $ref: '#/components/responses/Redirect'
+          description: Redirects to `/members`.
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+          description: The person is not in the group any more (HTML), or the caller is a stranger (neutral page).
+        '409':
+          $ref: '#/components/responses/Problem'
+          description: This would leave the group without an organizer.
+
+  # ------------------------------------------------------------------ static
+  /styles.css:
+    get:
+      tags: [Static]
+      operationId: getStyles
+      summary: Stylesheet
+      security: []
+      responses:
+        '200':
+          description: CSS.
+          content:
+            text/css:
+              schema:
+                type: string
+  /app.js:
+    get:
+      tags: [Static]
+      operationId: getClientScript
+      summary: Progressive-enhancement script
+      description: Reveals Copy and Share buttons when the browser supports them. The app works without it.
+      security: []
+      responses:
+        '200':
+          description: JavaScript.
+          content:
+            text/javascript:
+              schema:
+                type: string
+
+components:
+  securitySchemes:
+    personalLink:
+      type: apiKey
+      in: cookie
+      name: dc
+      description: |
+        Set by opening `/k/{token}`. Named `__Host-dc` over HTTPS. Identifies a **member** with full
+        reach. Verified by recomputing the HMAC from `LINK_SECRET`, the person's `public_id` and
+        `link_version`.
+    dinnerLink:
+      type: apiKey
+      in: cookie
+      name: dc_{dinnerPublicId}
+      description: |
+        Set by opening `/i/{token}`. The cookie **name** includes the dinner's `public_id`
+        (`dc_<id>`, or `__Host-dc_<id>` over HTTPS), so the browser sends it to `/i/` links too. Used only
+        on `/d/{dinnerPublicId}/...` paths and overrides the personal cookie there if it names a
+        different person. Grants only that person's one-dinner powers.
+
+  parameters:
+    DinnerId:
+      name: id
+      in: path
+      required: true
+      description: A dinner's `public_id`.
+      schema:
+        $ref: '#/components/schemas/PublicId'
+    InvitationId:
+      name: invitation
+      in: path
+      required: true
+      description: An invitation's `public_id`.
+      schema:
+        $ref: '#/components/schemas/PublicId'
+    PersonId:
+      name: id
+      in: path
+      required: true
+      description: A member's `public_id`.
+      schema:
+        $ref: '#/components/schemas/PublicId'
+    AttendeeId:
+      name: attendee
+      in: path
+      required: true
+      description: |
+        The attendee row's numeric id (the one place an internal id appears in a URL). It is always
+        checked against the caller's own invitation, so other people's seats cannot be reached.
+      schema:
+        type: integer
+        minimum: 1
+    LinkToken:
+      name: token
+      in: path
+      required: true
+      description: A signed link token, `{publicId}.{version}.{signature}`.
+      schema:
+        type: string
+        pattern: '^[\w-]{22}\.[\d-]+\.[\w-]{43}$'
+
+  headers:
+    Location:
+      description: Where to go next.
+      schema:
+        type: string
+
+  responses:
+    Html:
+      description: A server-rendered HTML page.
+      content:
+        text/html:
+          schema:
+            $ref: '#/components/schemas/HtmlPage'
+    Redirect:
+      description: Done; redirects to the next page (`303 See Other`).
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+    Neutral:
+      description: |
+        The neutral "Open your personal link" page, identical for every URL. Means *not found* **or** *not
+        allowed*; the app deliberately does not say which.
+      content:
+        text/html:
+          schema:
+            $ref: '#/components/schemas/HtmlPage'
+    Problem:
+      description: 'A "Something needs fixing" HTML page with a message and a Go back link.'
+      content:
+        text/html:
+          schema:
+            $ref: '#/components/schemas/HtmlPage'
+    CrossSite:
+      description: The `Origin` header is missing or its host does not match (`Cross-site request blocked`).
+      content:
+        text/plain:
+          schema:
+            type: string
+            examples: [Cross-site request blocked]
+
+  schemas:
+    # ================================================================== shared
+    HtmlPage:
+      type: string
+      description: An HTML document. Not meant to be parsed; see the operation description for what it shows.
+    PublicId:
+      type: string
+      pattern: '^[\w-]{22}$'
+      description: 16 random bytes, base64url-encoded. The only id clients ever see (apart from `Attendee.id`).
+      examples: [Xk3rZ0cvJmQ9Tn8aLw2bYg]
+    EpochMillis:
+      type: integer
+      format: int64
+      description: UTC milliseconds since the Unix epoch.
+      examples: [1801960200000]
+    Phone:
+      type: string
+      pattern: '^\+[1-9]\d{7,14}$'
+      description: E.164. Input of ten digits is taken as a US number (`+1`).
+      examples: ['+15125550104']
+    RsvpChoice:
+      type: string
+      enum: [yes, maybe, no]
+    NeedKind:
+      type: string
+      enum: [allergen, diet, other]
+      description: |
+        Allergies keep their own kind so that hosts can tell them from preferences, and so that dishes can
+        be checked against them once dishes exist.
+
+    # ================================================================== implemented domain model
+    GroupSettings:
+      type: object
+      description: |
+        The one group this installation serves (`group_settings`, constrained to `id = 1`). Created by
+        `POST /setup`; there is no endpoint to edit it afterwards.
+      required: [name, time_zone, default_courses]
+      properties:
+        name:
+          type: string
+          maxLength: 80
+          description: Shown as the heading of the home page.
+        time_zone:
+          type: string
+          description: IANA zone. Every date input and "is it past?" check uses this zone.
+          examples: [America/Chicago]
+        default_courses:
+          type: array
+          description: Stored as JSON text. Template for each new dinner's menu (planned; not used yet).
+          items:
+            $ref: '#/components/schemas/CourseTemplate'
+
+    CourseTemplate:
+      type: object
+      required: [name, slots]
+      properties:
+        name:
+          type: string
+          examples: [Main]
+        slots:
+          type: integer
+          minimum: 1
+          description: How many dishes this course needs.
+        host:
+          type: boolean
+          description: When true, the host takes these slots by default.
+      examples:
+        - { name: Starter, slots: 1 }
+        - { name: Main, slots: 1, host: true }
+        - { name: Sides, slots: 2 }
+        - { name: Dessert, slots: 1 }
+        - { name: Drinks, slots: 2 }
+
+    Person:
+      type: object
+      description: |
+        Everyone who can act in the app: **members** (the core group, who have a personal link) and
+        **guests** (invited to one dinner; one-dinner link only). Never hard-deleted: removal sets
+        `removed_at` and scrubs personal data, so past dinners still read correctly.
+
+        Two current members cannot share a name, ignoring case (a unique index on `lower(name)` where
+        `kind = member` and not removed).
+      required: [public_id, kind, name, phone, is_organizer, texts_opt_out, link_version, removed_at]
+      properties:
+        public_id:
+          $ref: '#/components/schemas/PublicId'
+        kind:
+          type: string
+          enum: [member, guest]
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          description: NFKC-normalised, whitespace collapsed and trimmed.
+        phone:
+          oneOf:
+            - $ref: '#/components/schemas/Phone'
+            - type: 'null'
+          description: Optional for guests and profile edits. Cleared on removal.
+        is_organizer:
+          type: boolean
+          description: Members only. The group always keeps at least one.
+        texts_opt_out:
+          type: boolean
+          description: Excludes the person from the app's `sms:` shortcuts. They can still use their link.
+        link_version:
+          type: integer
+          minimum: 1
+          description: |
+            Revocation counter mixed into the signed token. Incrementing it kills the person's personal
+            link, their sessions, and every one-dinner link issued for them. Never rendered.
+        removed_at:
+          oneOf:
+            - $ref: '#/components/schemas/EpochMillis'
+            - type: 'null'
+          description: Non-null means removed.
+
+    DietaryNeed:
+      type: object
+      description: |
+        One dietary restriction on a person (`dietary_needs`; unique per `person, kind, label`). Needs
+        carry over to every dinner. A person's set is always replaced wholesale on save. The same shape is
+        stored as JSON on `Attendee.diet` for plus-ones, who are not people.
+      required: [kind, label]
+      properties:
+        kind:
+          $ref: '#/components/schemas/NeedKind'
+        label:
+          type: string
+          description: |
+            For `diet` and `allergen`, one of the listed catalogue values (see `NeedChoice`). For `other`,
+            free text, at most 200 characters.
+      examples:
+        - { kind: allergen, label: tree nuts }
+        - { kind: diet, label: vegetarian }
+        - { kind: other, label: no spicy food }
+
+    NeedChoice:
+      type: string
+      description: |
+        A value of the `need` checkboxes: `{kind}:{label}`, or the literal `other` (which enables the
+        free-text `other` field). Unknown values are silently ignored.
+      enum:
+        - diet:vegetarian
+        - diet:vegan
+        - diet:pescatarian
+        - diet:halal
+        - diet:kosher
+        - diet:no beef
+        - diet:no pork
+        - diet:no alcohol
+        - allergen:dairy
+        - allergen:eggs
+        - allergen:fish
+        - allergen:gluten
+        - allergen:peanuts
+        - allergen:sesame
+        - allergen:shellfish
+        - allergen:soy
+        - allergen:tree nuts
+        - other
+
+    Dinner:
+      type: object
+      description: |
+        One evening. The unit around which almost everything hangs: invitations, seats, and (later)
+        menu, announcements and notices.
+
+        **Lifecycle today.** `POST /new` creates a `confirmed` dinner. `cancel` and `restore` toggle
+        `confirmed` ⇄ `cancelled`. `planning` and `polling` are reserved for the planned date-poll feature
+        and cannot be reached. The schema rejects `confirmed` without a date (`starts_at`).
+      required: [public_id, host, title, starts_at, location, note, capacity, status, rsvp_closed]
+      properties:
+        public_id:
+          $ref: '#/components/schemas/PublicId'
+        season:
+          oneOf:
+            - type: integer
+            - type: 'null'
+          description: '`Season` this belongs to. Always null today (seasons are planned).'
+          x-status: planned
+        host:
+          $ref: '#/components/schemas/PublicId'
+          description: |
+            `Person.public_id` of the host. The host is always counted as coming (their reply is `yes`
+            and cannot be changed to maybe or no).
+        title:
+          type: string
+          minLength: 1
+          maxLength: 120
+        starts_at:
+          oneOf:
+            - $ref: '#/components/schemas/EpochMillis'
+            - type: 'null'
+          description: No end time is stored; calendars block 3 hours.
+        location:
+          type: string
+          maxLength: 300
+          description: Free text, shown as a Google Maps search link.
+        note:
+          type: string
+          maxLength: 2000
+        capacity:
+          oneOf:
+            - type: integer
+              minimum: 1
+              maximum: 500
+            - type: 'null'
+          description: Seats **including plus-ones**. Null means no limit.
+        status:
+          type: string
+          enum: [planning, polling, confirmed, cancelled]
+          description: |
+            `confirmed` and `cancelled` are live. RSVPs, plus-ones, calendar export and Send invite
+            assume `confirmed` (Send invite is only offered then). `planning` and `polling` are
+            reserved.
+        rsvp_closed:
+          type: boolean
+          description: |
+            When true, nobody can reply or change plus-ones (organizers included). The host reopens replies
+            by unticking "Close replies" on the edit form.
+        past:
+          type: boolean
+          readOnly: true
+          description: |
+            Derived, never stored: the dinner's local day (in `GroupSettings.time_zone`) is before today.
+            Past dinners are read-only except to organizers.
+
+    Invitation:
+      type: object
+      description: |
+        The join between a `Dinner` and a `Person`: "this person is on this dinner's guest list".
+        One per `(dinner, person)`.
+
+        Created for **every current member** when a dinner is created, for every member added later to each
+        dinner that is not past, and for each guest the host adds. It carries the person's **reply** and the
+        version of their **one-dinner link**.
+      required: [public_id, dinner, person, rsvp, replied_at, link_version]
+      properties:
+        public_id:
+          $ref: '#/components/schemas/PublicId'
+          description: Appears in the one-dinner link token and in the host's guest-management URLs.
+        dinner:
+          $ref: '#/components/schemas/PublicId'
+        person:
+          $ref: '#/components/schemas/PublicId'
+        rsvp:
+          oneOf:
+            - $ref: '#/components/schemas/RsvpChoice'
+            - type: 'null'
+          description: Null means no reply yet.
+        replied_at:
+          oneOf:
+            - $ref: '#/components/schemas/EpochMillis'
+            - type: 'null'
+        link_version:
+          type: integer
+          minimum: 1
+          description: |
+            Bumped by "Replace link". The one-dinner token is signed over
+            `{person.link_version}-{invitation.link_version}`, so either counter revokes it.
+
+    Attendee:
+      type: object
+      description: |
+        **One row per seat wanted**, not per person: a member who says yes gets one row, and each plus-one
+        gets another. Exactly one of `person` or `plus_one_name` is set.
+
+        **The waitlist is never stored.** Rows are sorted by `(queued_at, person-before-plus-one, id)`; the
+        first `Dinner.capacity` hold seats and the rest are waitlisted. So changing capacity, or someone
+        leaving, re-seats everyone with no extra writes. Rows count only while their invitation's reply is
+        `yes` and the person is not removed.
+      required: [id, invitation, person, plus_one_name, diet, queued_at]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+          description: The numeric row id used in plus-one URLs.
+        invitation:
+          $ref: '#/components/schemas/PublicId'
+        person:
+          oneOf:
+            - $ref: '#/components/schemas/PublicId'
+            - type: 'null'
+          description: Set when the seat is the invitee's own.
+        plus_one_name:
+          type:
+            - string
+            - 'null'
+          description: Set when the seat is a plus-one. Plus-ones are not `Person`s and have no link.
+        diet:
+          type: array
+          description: A plus-one's own needs. For a person's own seat this is empty and their `DietaryNeed`s apply.
+          items:
+            $ref: '#/components/schemas/DietaryNeed'
+        queued_at:
+          $ref: '#/components/schemas/EpochMillis'
+          description: |
+            Place in line. Saying yes again keeps it; rejoining after maybe/no starts a new one;
+            editing a plus-one keeps theirs. At most **10** plus-ones per invitation.
+
+    # ------------------------------------------------------------------ read model
+    AttendeeView:
+      type: object
+      description: An `Attendee` as the dinner page lists it.
+      required: [id, name, plus_one_of, needs, waitlisted]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+          description: The person's name, or the plus-one's name.
+        plus_one_of:
+          type:
+            - string
+            - 'null'
+          description: Name of the member who brought them, for plus-ones.
+        needs:
+          type: array
+          items:
+            $ref: '#/components/schemas/DietaryNeed'
+        waitlisted:
+          type: boolean
+
+    DinnerPage:
+      type: object
+      description: |
+        **Read model, not a JSON response.** What `GET /d/{id}` assembles from the stored objects. It shows
+        how the objects fit together for one viewer.
+
+        Visibility rules: the RSVP panel appears only if the viewer has an `Invitation` and the dinner is
+        not past. Members see dietary needs by name (waitlisted people included). Guests see only an
+        anonymous summary ("vegan (2 people)") for people holding a seat.
+      required: [dinner, host_name, viewer, seated, waitlist, no_reply]
+      properties:
+        dinner:
+          $ref: '#/components/schemas/Dinner'
+        host_name:
+          type: string
+        viewer:
+          type: object
+          required: [person, scope]
+          properties:
+            person:
+              $ref: '#/components/schemas/PublicId'
+            scope:
+              type: string
+              enum: [full, dinner]
+              description: '`full` for a personal link, `dinner` for a one-dinner link.'
+        own_invitation:
+          oneOf:
+            - $ref: '#/components/schemas/Invitation'
+            - type: 'null'
+        seated:
+          type: array
+          items:
+            $ref: '#/components/schemas/AttendeeView'
+        waitlist:
+          type: array
+          description: Same people as `seated` would be if capacity allowed, in line order.
+          items:
+            $ref: '#/components/schemas/AttendeeView'
+        maybe:
+          type: array
+          items: { type: string }
+          description: Names of invitees who replied maybe.
+        declined:
+          type: array
+          items: { type: string }
+          description: Names of invitees who replied no.
+        no_reply:
+          type: array
+          items: { type: string }
+          description: Names of invitees who have not replied.
+        calendar:
+          type: object
+          description: Present only for a `confirmed`, dated, not-past dinner.
+          properties:
+            ics:
+              type: string
+              description: '`/d/{id}/calendar.ics`'
+            google:
+              type: string
+              format: uri
+
+    Actor:
+      type: object
+      description: |
+        **Server-side request context** (`c.get("actor")`), not part of any payload. Who is making the
+        request and with what reach. The permission check `can(actor, action, dinner?)` is the single
+        source of truth for the table in the API description.
+      required: [person, scope]
+      properties:
+        person:
+          $ref: '#/components/schemas/Person'
+        scope:
+          type: string
+          enum: [full, dinner]
+          description: |
+            `full` comes from a personal link; `dinner` from a one-dinner link and never grants more than
+            that one dinner's view, replies, and (for guests) their own dietary needs.
+        dinnerId:
+          type: integer
+          description: 'Present when `scope` is `dinner`: the only dinner this actor may touch.'
+
+    # ================================================================== planned domain model
+    Season:
+      type: object
+      x-status: planned
+      description: |
+        **PLANNED. Table exists; no endpoints.** A run of dinners ("Winter 2027") with a cadence and a
+        host rotation. Will generate placeholder dinners (`Dinner.season`).
+      required: [id, name, cadence, starts_on, ends_on]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        cadence:
+          type: string
+          description: Free text for now, e.g. monthly on the first Saturday.
+        starts_on: { type: string, format: date }
+        ends_on: { type: string, format: date }
+        hosts:
+          type: array
+          description: '`season_hosts`: ordered by `position`; the rotation.'
+          items:
+            type: object
+            required: [position, person]
+            properties:
+              position: { type: integer }
+              person:
+                $ref: '#/components/schemas/PublicId'
+
+    PollOption:
+      type: object
+      x-status: planned
+      description: |
+        **PLANNED. Table exists; no endpoints.** A candidate date for a dinner in `polling` status,
+        unique per `(dinner, starts_at)`. Each person's vote (`poll_votes`, keyed `(option, person)`) is
+        yes, maybe or no. Confirming one option would set `Dinner.starts_at` and status `confirmed`.
+      required: [id, dinner, starts_at]
+      properties:
+        id: { type: integer }
+        dinner:
+          $ref: '#/components/schemas/PublicId'
+        starts_at:
+          $ref: '#/components/schemas/EpochMillis'
+        votes:
+          type: array
+          items:
+            type: object
+            required: [person, vote]
+            properties:
+              person:
+                $ref: '#/components/schemas/PublicId'
+              vote:
+                $ref: '#/components/schemas/RsvpChoice'
+
+    Course:
+      type: object
+      x-status: planned
+      description: |
+        **PLANNED. Table exists; no endpoints.** A course on a dinner's menu (Starter, Main, ...), seeded
+        from `GroupSettings.default_courses`. Holds ordered `Slot`s.
+      required: [id, dinner, name, position]
+      properties:
+        id: { type: integer }
+        dinner:
+          $ref: '#/components/schemas/PublicId'
+        name: { type: string }
+        position: { type: integer }
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/Slot'
+
+    Slot:
+      type: object
+      x-status: planned
+      description: |
+        **PLANNED. Table exists; no endpoints.** One place for a dish in a `Course`. A host can assign it
+        to someone (`assignee`, status `proposed` until they accept), or a member can claim it by creating
+        a `Dish` (one dish per slot, enforced by a unique `dishes.slot_id`, which settles two people
+        claiming at once).
+      required: [id, course, position, assignee, assignment_status]
+      properties:
+        id: { type: integer }
+        course: { type: integer }
+        position: { type: integer }
+        assignee:
+          oneOf:
+            - $ref: '#/components/schemas/PublicId'
+            - type: 'null'
+        assignment_status:
+          type:
+            - string
+            - 'null'
+          enum: [proposed, accepted, null]
+
+    Dish:
+      type: object
+      x-status: planned
+      description: |
+        **PLANNED. Table exists; no endpoints.** What someone is bringing or cooking. Belongs to a
+        `Slot`, or is free-form (`slot` null) such as "ice". Tags (`dish_tags`) such as *vegetarian* or
+        *contains nuts* will be checked against attendees' `DietaryNeed`s to raise (never block) allergy
+        warnings.
+      required: [id, dinner, slot, person, name, note, recipe]
+      properties:
+        id: { type: integer }
+        dinner:
+          $ref: '#/components/schemas/PublicId'
+        slot:
+          type:
+            - integer
+            - 'null'
+        person:
+          $ref: '#/components/schemas/PublicId'
+          description: Who is bringing it.
+        name: { type: string }
+        note: { type: string }
+        recipe:
+          type:
+            - integer
+            - 'null'
+        tags:
+          type: array
+          items: { type: string }
+
+    Recipe:
+      type: object
+      x-status: planned
+      description: |
+        **PLANNED. Table exists; no endpoints.** The group's saved recipe library: a link and/or pasted
+        text, reusable when claiming a dish.
+      required: [id, name, url, body, created_by]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        url: { type: string }
+        body: { type: string }
+        created_by:
+          oneOf:
+            - $ref: '#/components/schemas/PublicId'
+            - type: 'null'
+
+    Announcement:
+      type: object
+      x-status: planned
+      description: |
+        **PLANNED. Table exists; no endpoints.** A host's message to a dinner's guests. Text is the only
+        outbound channel and is one-way. `marked_sent_at` implies the host sends it from their own phone via
+        an `sms:` link (the app has no SMS provider).
+      required: [id, dinner, audience, body, created_by, marked_sent_at]
+      properties:
+        id: { type: integer }
+        dinner:
+          $ref: '#/components/schemas/PublicId'
+        audience:
+          type: string
+          enum: [all, confirmed, no_reply]
+        body: { type: string }
+        created_by:
+          $ref: '#/components/schemas/PublicId'
+        marked_sent_at:
+          oneOf:
+            - $ref: '#/components/schemas/EpochMillis'
+            - type: 'null'
+
+    Notice:
+      type: object
+      x-status: planned
+      description: |
+        **PLANNED. Table exists; no endpoints.** An in-app message to one person that they can dismiss.
+        `TODO(milestone 5)` in `dinners.tsx` marks where they will be raised (date, time or place changes,
+        cancellation, moving to the waitlist).
+      required: [id, dinner, person, kind, body, dismissed_at]
+      properties:
+        id: { type: integer }
+        dinner:
+          oneOf:
+            - $ref: '#/components/schemas/PublicId'
+            - type: 'null'
+        person:
+          $ref: '#/components/schemas/PublicId'
+        kind:
+          type: string
+          enum: [change, drop, opening, assignment]
+        body: { type: string }
+        dismissed_at:
+          oneOf:
+            - $ref: '#/components/schemas/EpochMillis'
+            - type: 'null'
+
+    # ================================================================== form bodies
+    NeedFields:
+      type: object
+      description: |
+        The dietary-needs checkboxes shared by several forms. Both fields may be omitted (no needs).
+      properties:
+        need:
+          type: array
+          description: Repeated `need` fields (one per ticked box). A single value arrives as a string; both work.
+          items:
+            $ref: '#/components/schemas/NeedChoice'
+          uniqueItems: true
+        other:
+          type: string
+          description: |
+            Free text for the "Other" need. Used only when `need` includes `other`; trimmed and cut to 200
+            characters.
+
+    SetupForm:
+      type: object
+      required: [secret, group, name, phone, timeZone]
+      properties:
+        secret:
+          type: string
+          format: password
+          writeOnly: true
+          description: Must equal the `SETUP_SECRET` binding (compared in constant time).
+        group:
+          type: string
+          minLength: 1
+          maxLength: 80
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          description: The first organizer's name.
+        phone:
+          type: string
+          description: Optional; send an empty string to skip. Otherwise any form `normalizePhone` accepts.
+        timeZone:
+          type: string
+          description: A valid IANA zone name.
+          examples: [America/Chicago]
+
+    DinnerFields:
+      type: object
+      description: Fields shared by the new-dinner and edit-dinner forms. Send empty strings for blanks; the keys must be present.
+      required: [title, startsAt, location, note, capacity]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 120
+        startsAt:
+          $ref: '#/components/schemas/LocalDateTime'
+        location:
+          type: string
+          maxLength: 300
+          description: Send an empty string for none.
+        note:
+          type: string
+          maxLength: 2000
+          description: Send an empty string for none.
+        capacity:
+          type: string
+          pattern: '^(\d+)?$'
+          description: A whole number from 1 to 500, or an empty string for no limit.
+
+    NewDinnerForm:
+      allOf:
+        - $ref: '#/components/schemas/DinnerFields'
+        - type: object
+          properties:
+            host:
+              $ref: '#/components/schemas/PublicId'
+              description: |
+                `Person.public_id` of a current member. Omit to host yourself. Only organizers may name
+                anyone else (the browser omits the field for everyone else because the select is
+                disabled). Replies always start open: the create handler ignores `rsvpClosed`.
+
+    EditDinnerForm:
+      allOf:
+        - $ref: '#/components/schemas/DinnerFields'
+        - type: object
+          properties:
+            rsvpClosed:
+              type: string
+              const: 'on'
+              description: A ticked "Close replies" checkbox. Omit to leave replies open.
+            confirmed:
+              type: string
+              const: '1'
+              description: Sent only by the "Move them" confirmation form, to accept a smaller capacity.
+
+    LocalDateTime:
+      type: string
+      pattern: '^\d{4}-\d\d-\d\dT\d\d:\d\d$'
+      description: |
+        `datetime-local` text, interpreted in the group's time zone (not UTC). Must be a real date; DST gaps
+        are resolved on the server.
+      examples: ['2027-02-06T18:30']
+
+    RsvpForm:
+      type: object
+      required: [rsvp]
+      properties:
+        rsvp:
+          $ref: '#/components/schemas/RsvpChoice'
+
+    PlusOneForm:
+      allOf:
+        - $ref: '#/components/schemas/NeedFields'
+        - type: object
+          required: [name]
+          properties:
+            name:
+              type: string
+              minLength: 1
+              maxLength: 80
+              description: The plus-one's name.
+
+    GuestForm:
+      type: object
+      required: [name, phone]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        phone:
+          type: string
+          description: Optional; send an empty string to skip.
+
+    ProfileForm:
+      allOf:
+        - $ref: '#/components/schemas/NeedFields'
+        - type: object
+          required: [name, phone]
+          properties:
+            name:
+              type: string
+              minLength: 1
+              maxLength: 80
+            phone:
+              type: string
+              description: Send an empty string to clear it.
+            textsOptOut:
+              type: string
+              const: 'on'
+              description: A ticked "Leave me out of texts" checkbox.
+
+    MemberForm:
+      type: object
+      required: [name, phone]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        phone:
+          type: string
+          description: Required here, unlike guests. A full number, e.g. `5125550104` or `+442071838750`.
+
+    OrganizerForm:
+      type: object
+      required: [on]
+      properties:
+        'on':
+          type: string
+          enum: ['0', '1']
+          description: '`1` makes the person an organizer; `0` removes the role.'
