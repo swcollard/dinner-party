@@ -9,7 +9,7 @@ export default defineConfig({
       miniflare: {
         bindings: {
           SETUP_SECRET: "unit-test-setup-secret-for-vitest",
-          LINK_SECRET: "test-link-secret-at-least-32-characters",
+          LINK_SECRET: "unit-test-link-secret-for-vitest",
           PUBLIC_BASE_URL: "https://dinner.test",
           TEST_MIGRATIONS: await readD1Migrations("./migrations"),
         },

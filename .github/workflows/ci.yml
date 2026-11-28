@@ -31,7 +31,7 @@ jobs:
       - name: Worker starts
         run: |
           npm run migrate:local
-          npx wrangler dev --port 8787 --var SETUP_SECRET:continuous-integration-setup-secret --var LINK_SECRET:ci-link-secret-at-least-32-characters --var PUBLIC_BASE_URL:http://localhost:8787 > wrangler.log 2>&1 &
+          npx wrangler dev --port 8787 --var SETUP_SECRET:continuous-integration-setup-secret --var LINK_SECRET:continuous-integration-link-secret --var PUBLIC_BASE_URL:http://localhost:8787 > wrangler.log 2>&1 &
           server=$!
           for attempt in $(seq 60); do
             if curl --silent --fail --output /dev/null http://localhost:8787/setup; then
