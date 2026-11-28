@@ -10,19 +10,27 @@ export const DIETS = [
   "vegetarian", "vegan", "pescatarian", "halal", "kosher", "no beef", "no pork", "no alcohol",
 ];
 
+/**
+ * Every choice in the one "Dietary restrictions" list. Allergies keep their own kind, so hosts can tell
+ * them apart from preferences and dishes can be checked against them.
+ */
+export const RESTRICTIONS: Need[] = [
+  ...DIETS.map((label) => ({ kind: "diet" as const, label })),
+  ...ALLERGENS.map((label) => ({ kind: "allergen" as const, label })),
+];
+
 /** Reads the checkboxes ("allergen:eggs") and free text of NeedFields, ignoring anything unknown or text without "other" checked. */
 export function parseNeeds(checked: string[], other: string): Need[] {
-  const known: Need[] = [
-    ...ALLERGENS.map((label) => ({ kind: "allergen" as const, label })),
-    ...DIETS.map((label) => ({ kind: "diet" as const, label })),
-  ];
-  const needs = known.filter((n) => checked.includes(`${n.kind}:${n.label}`));
+  const needs = RESTRICTIONS.filter((n) => checked.includes(`${n.kind}:${n.label}`));
   const text = checked.includes("other") ? other.trim().slice(0, 200) : "";
   return text ? [...needs, { kind: "other", label: text }] : needs;
 }
 
+// Labels are stored as listed above; these read better before "allergy".
+const SINGULAR: Record<string, string> = { eggs: "egg", peanuts: "peanut", "tree nuts": "tree nut" };
+
 export function describeNeed(need: Need): string {
-  return need.kind === "allergen" ? `${need.label} allergy` : need.label;
+  return need.kind === "allergen" ? `${SINGULAR[need.label] ?? need.label} allergy` : need.label;
 }
 
 /** Distinct needs with how many people have each, for readers who may not see names. */

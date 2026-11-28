@@ -29,7 +29,7 @@ test.beforeAll(async ({ browser }) => {
   organizer = await (await browser.newContext()).newPage();
   await organizer.goto("/setup");
   await expectGoodPage(organizer);
-  await organizer.getByLabel("Setup secret").fill("e2e");
+  await organizer.getByLabel("Setup secret").fill("end-to-end-browser-testing-setup-secret");
   await organizer.getByLabel("Group name").fill("Supper Club");
   await organizer.getByLabel("Your name").fill("Sam");
   await organizer.getByRole("button", { name: "Create group" }).click();
@@ -69,10 +69,10 @@ test("a member taps the invite, says yes and adds a plus-one", async ({ browser 
   await expect(bo.getByRole("status")).toHaveText("You're coming.");
   await bo.getByText("Bringing someone?").click();
   await bo.getByLabel("Their name").last().fill("Cy");
-  await bo.getByText("Dietary needs (optional)").click();
-  await bo.locator("details form").last().getByLabel("peanuts").check();
+  await bo.getByText("Dietary restrictions (optional)").click();
+  await bo.locator("details form").last().getByLabel("peanut allergy").check();
   await bo.getByRole("button", { name: "Add plus-one" }).click();
-  await expect(bo.getByText("Cy (with Bo): peanuts allergy")).toBeVisible();
+  await expect(bo.getByText("Cy (with Bo): peanut allergy")).toBeVisible();
   await expect(bo.getByText("3 coming of 3 seats")).toBeVisible();
   await expectGoodPage(bo);
 });
@@ -107,7 +107,7 @@ test("other dietary needs appear on demand, save and clear", async ({ browser })
   for (const page of ["/profile", `${dinnerUrl}/diet`]) {
     await bo.goto(page);
     const box = bo.getByRole("checkbox", { name: "Other" });
-    const text = bo.getByLabel("Other dietary needs");
+    const text = bo.getByLabel("Other dietary restrictions");
     await expect(text).toBeHidden();
     await box.check();
     await text.fill("no cilantro");
@@ -130,7 +130,7 @@ test("other dietary needs appear on demand, save and clear", async ({ browser })
 test("typing an other need ticks its box where the field can't be hidden", async ({ browser }) => {
   const bo = await newPerson(browser, boLink);
   await bo.goto("/profile");
-  const text = bo.getByLabel("Other dietary needs");
+  const text = bo.getByLabel("Other dietary restrictions");
   await text.evaluate((input) => input.style.setProperty("display", "block"));
   await text.fill("no cilantro");
   await expect(bo.getByRole("checkbox", { name: "Other" })).toBeChecked();
@@ -151,6 +151,15 @@ test("pages are accessible in dark mode", async ({ browser }) => {
   const ana = await newPerson(browser, anaLink, { colorScheme: "dark" });
   await ana.goto(dinnerUrl);
   await expectGoodPage(ana);
+});
+
+test("opening someone else's link asks first", async ({ browser }) => {
+  const bo = await newPerson(browser, boLink);
+  await bo.goto(await linkFor(organizer, "Sam"));
+  await expect(bo.getByRole("heading", { level: 1 })).toHaveText("Continue as Sam?");
+  await expectGoodPage(bo);
+  await bo.getByRole("link", { name: "Stay as Bo" }).click();
+  await expect(bo.getByText("You're Bo")).toBeVisible();
 });
 
 test("a stranger sees nothing", async ({ browser }) => {

@@ -95,13 +95,14 @@ describe("one-dinner links", () => {
     const { ana, dinner } = await seed();
     const other = (await ana.post("/new", { host: await personId("Ana"), title: "Tacos", startsAt: "2099-03-07T18:30", location: "", note: "", capacity: "" })).headers.get("Location")!;
     const token = (await links(ana, `${dinner}/send`, "i"))[0]!.split("/i/")[1]!;
-    const response = await SELF.fetch(BASE + other, { headers: { Cookie: `dc_dinner=${token}` } });
+    const cookie = `__Host-dc_${other.slice(3)}=${token}`;
+    const response = await SELF.fetch(BASE + other, { headers: { Cookie: cookie } });
     expect(response.status).toBe(404);
   });
   it("sit on top of a personal session without replacing it", async () => {
     const { ana, bo, dinner } = await seed();
     const samLink = (await links(ana, `${dinner}/send`, "i"))[1]!;
-    await bo.get(samLink);
+    await bo.post(new URL(samLink).pathname);
     expect((await bo.get(dinner)).body).toContain("You&#39;re Sam");
     expect((await bo.get("/")).body).toContain("You&#39;re Bo");
     expect((await bo.get(`${dinner}/send`)).status).toBe(404);

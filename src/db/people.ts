@@ -97,13 +97,27 @@ export async function setOrganizer(db: D1Database, publicId: string, on: boolean
   return result.meta.changes > 0;
 }
 
+/**
+ * Keeps the name, so past dinners still read correctly, but deletes the phone number, dietary needs
+ * and the needs of any plus-ones they brought.
+ */
 export async function removeMember(db: D1Database, publicId: string): Promise<boolean> {
-  const result = await db
-    .prepare(
-      `UPDATE people SET removed_at = ?, is_organizer = 0, link_version = link_version + 1
-       WHERE public_id = ? AND kind = 'member' AND removed_at IS NULL AND ${KEEPS_AN_ORGANIZER}`,
-    )
-    .bind(Date.now(), publicId)
-    .run();
-  return result.meta.changes > 0;
+  // The deletes run only if the update did: they look for the person already marked removed.
+  const removed = "SELECT id FROM people WHERE public_id = ?1 AND removed_at IS NOT NULL";
+  const [result] = await db.batch([
+    db
+      .prepare(
+        `UPDATE people SET removed_at = ?2, is_organizer = 0, link_version = link_version + 1, phone = NULL
+         WHERE public_id = ?1 AND kind = 'member' AND removed_at IS NULL AND ${KEEPS_AN_ORGANIZER}`,
+      )
+      .bind(publicId, Date.now()),
+    db.prepare(`DELETE FROM dietary_needs WHERE person_id IN (${removed})`).bind(publicId),
+    db
+      .prepare(
+        `UPDATE attendees SET diet = '[]'
+         WHERE invitation_id IN (SELECT id FROM invitations WHERE person_id IN (${removed}))`,
+      )
+      .bind(publicId),
+  ]);
+  return result!.meta.changes > 0;
 }

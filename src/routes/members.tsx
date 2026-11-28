@@ -7,8 +7,9 @@ import { normalizePhone, smsUri } from "../domain/messages";
 import type { AppEnv } from "../types";
 import { Field, Layout } from "../views/layout";
 import { absoluteUrl, neutral, problem, readForm } from "./http";
+import { isNameTaken, NAME_TAKEN, personName } from "./names";
 
-const memberForm = z.object({ name: z.string().trim().min(1).max(80), phone: z.string() });
+const memberForm = z.object({ name: personName, phone: z.string() });
 const organizerForm = z.object({ on: z.enum(["0", "1"]) });
 
 export const members = new Hono<AppEnv>();
@@ -57,6 +58,7 @@ members.get("/", async (c) => {
                   <button class="secondary">{person.is_organizer ? "Remove as organizer" : "Make organizer"}</button>
                 </form>
                 <form method="post" action={`${path}/remove`}>
+                  <p>Removing deletes their phone number and dietary restrictions.</p>
                   <button class="danger">Remove {person.name} from the group</button>
                 </form>
               </details>
@@ -80,7 +82,12 @@ members.post("/", async (c) => {
   if (!form.success || !phone) return problem(c, "Enter a name and a full phone number.", "/members");
   const settings = await getSettings(c.env.DB);
   if (!settings) return neutral(c);
-  await addMember(c.env.DB, form.data.name, phone, settings.time_zone);
+  try {
+    await addMember(c.env.DB, form.data.name, phone, settings.time_zone);
+  } catch (error) {
+    if (isNameTaken(error)) return problem(c, NAME_TAKEN, "/members", 409);
+    throw error;
+  }
   return c.redirect("/members", 303);
 });
 

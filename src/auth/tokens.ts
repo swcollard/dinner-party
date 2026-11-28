@@ -38,6 +38,9 @@ export async function secretsMatch(a: string, b: string): Promise<boolean> {
   return x.reduce((diff, byte, i) => diff | (byte ^ y[i]!), 0) === 0;
 }
 
+/** Applies to LINK_SECRET and SETUP_SECRET: guessing either would hand over the group. */
+export const MIN_SECRET_LENGTH = 32;
+
 export type TokenKind = "personal" | "invitation";
 
 /**
@@ -50,7 +53,9 @@ export async function signToken(
   publicId: string,
   version: string,
 ): Promise<string> {
-  if (!secret || secret.length < 32) throw new Error("LINK_SECRET must be at least 32 characters");
+  if (!secret || secret.length < MIN_SECRET_LENGTH) {
+    throw new Error(`LINK_SECRET must be at least ${MIN_SECRET_LENGTH} characters`);
+  }
   const signature = base64url(await hmac(secret, `${kind}.${publicId}.${version}`));
   return `${publicId}.${version}.${signature}`;
 }
